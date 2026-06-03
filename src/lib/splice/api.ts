@@ -73,9 +73,7 @@ export const SoundsSearchAutocomplete = {
 
 // ---------------------------------------------------------------
 
-const GRAPHQL_URL = "https://surfaces-graphql.splice.com/graphql"
-
-import { fetch } from "@tauri-apps/plugin-http"
+import { invoke } from "@tauri-apps/api/core"
 
 export async function querySplice(
     template: QueryTemplate,
@@ -85,22 +83,18 @@ export async function querySplice(
     Object.assign(body.variables, variables)
     const startTime = Date.now()
     console.log("💌 Requesting", body)
-    let response = await fetch(GRAPHQL_URL, {
-        method: "POST",
-        body: JSON.stringify(body),
-        headers: {
-            "Content-Type": "application/json",
-            "User-Agent":
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-            "apollo-require-preflight": "true",
-            "x-apollo-operation-name": body.operationName || "SamplesSearch",
-        },
-    })
-    if (!response.ok) {
-        console.error(await response.text())
+    try {
+        // Routed through a Rust command instead of the http plugin: on Windows
+        // the plugin injects `Origin: http://tauri.localhost`, which Splice's
+        // Cloudflare protection blocks with a 403.
+        const text = await invoke<string>("splice_graphql", {
+            body: JSON.stringify(body),
+        })
+        const json = JSON.parse(text)
+        console.log("📬 Received", json, "after", Date.now() - startTime, "ms")
+        return json
+    } catch (error) {
+        console.error("⚠️ Splice query failed", error)
         return null
     }
-    const json = await response.json()
-    console.log("📬 Received", json, "after", Date.now() - startTime, "ms")
-    return json
 }
