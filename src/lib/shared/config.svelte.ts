@@ -14,12 +14,32 @@ const CONFIG_FILE_NAME = "config.json"
 
 export type UITheme = "system" | "light" | "dark"
 
+export type TransposeMode = "key" | "pitch"
+export type NoteSpelling = "flat" | "sharp"
+
+export type TransposeConfig = {
+    enabled: boolean
+    mode: TransposeMode
+    target_key: string
+    spelling: NoteSpelling
+    semitones: number
+}
+
+const DEFAULT_TRANSPOSE: TransposeConfig = {
+    enabled: false,
+    mode: "key",
+    target_key: "C",
+    spelling: "flat",
+    semitones: 0,
+}
+
 const DEFAULT_CONFIG = {
     samples_dir: null as string | null,
     ui_theme: "system" as UITheme,
     ui_scale: 1,
     cut_mp3_delay: true,
     repeat_audio: true,
+    transpose: { ...DEFAULT_TRANSPOSE } as TransposeConfig,
 }
 
 let samplesDirValid = $state(false)
@@ -61,7 +81,11 @@ export async function loadConfig() {
         const fileContent = await readTextFile("config.json", {
             baseDir: BaseDirectory.AppConfig,
         })
-        Object.assign(config, JSON.parse(fileContent))
+        const parsed = JSON.parse(fileContent)
+        // Merge nested transpose separately so configs from older versions keep new defaults
+        const transpose = { ...DEFAULT_TRANSPOSE, ...(parsed.transpose ?? {}) }
+        Object.assign(config, parsed)
+        config.transpose = transpose
         console.log("📂 Config loaded")
     }
 

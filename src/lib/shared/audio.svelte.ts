@@ -4,7 +4,7 @@ import { config } from "$lib/shared/config.svelte"
 import {
     dataStore,
     freeDescrambledSample,
-    getDescrambledSampleURL,
+    getPlaybackSampleURL,
 } from "$lib/shared/store.svelte"
 
 let prevVolume = 0.8
@@ -73,12 +73,27 @@ export const globalAudio = $state({
         }
 
         this.currentAsset = sampleAsset
-        this.ref.src = await getDescrambledSampleURL(sampleAsset)
+        this.ref.src = await getPlaybackSampleURL(sampleAsset)
         if (this.currentAsset.uuid != sampleAsset.uuid) {
             return
         }
         this.ref.currentTime = from
         this.ref.loop = sampleAsset.asset_category_slug == "loop" && config.repeat_audio
         this.ref.play()
+    },
+    // Reload the currently playing sample (e.g. after transpose settings change),
+    // preserving playback position and play/pause state.
+    async reloadCurrent() {
+        const asset = this.currentAsset
+        if (!asset) return
+        const wasPaused = this.paused
+        const from = this.ref.currentTime || 0
+        const src = await getPlaybackSampleURL(asset)
+        if (this.currentAsset?.uuid != asset.uuid) return
+        this.ref.src = src
+        this.ref.currentTime = from
+        this.ref.loop =
+            asset.asset_category_slug == "loop" && config.repeat_audio
+        if (!wasPaused) this.ref.play()
     },
 })
