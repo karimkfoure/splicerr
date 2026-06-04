@@ -1,12 +1,13 @@
 const SPLICE_GRAPHQL_URL: &str = "https://surfaces-graphql.splice.com/graphql";
-const BROWSER_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 
 /// Sends a GraphQL request to Splice from the Rust side.
 ///
-/// We can't use the http plugin for this: on Windows it injects an
-/// `Origin: http://tauri.localhost` header, which Splice's Cloudflare
-/// protection blocks with a 403. A plain reqwest request sends no such
-/// Origin and passes.
+/// Two reasons this goes through reqwest instead of the http plugin:
+/// - On Windows the plugin injects `Origin: http://tauri.localhost`, which
+///   Splice's Cloudflare blocks with a 403.
+/// - We deliberately send NO browser `User-Agent`: a spoofed Chrome UA with a
+///   non-browser TLS fingerprint trips Cloudflare's bot challenge. Sending no
+///   UA (just the Apollo preflight headers) passes.
 #[tauri::command]
 async fn splice_graphql(body: String) -> Result<String, String> {
     let operation_name = serde_json::from_str::<serde_json::Value>(&body)
@@ -22,7 +23,6 @@ async fn splice_graphql(body: String) -> Result<String, String> {
     let response = client
         .post(SPLICE_GRAPHQL_URL)
         .header("content-type", "application/json")
-        .header("user-agent", BROWSER_UA)
         .header("apollo-require-preflight", "true")
         .header("x-apollo-operation-name", operation_name)
         .body(body)
