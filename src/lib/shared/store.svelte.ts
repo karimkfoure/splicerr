@@ -13,6 +13,8 @@ import type {
 import { globalAudio } from "./audio.svelte"
 import { loading } from "./loading.svelte"
 import { fetch } from "@tauri-apps/plugin-http"
+import { pitchShiftAudioBuffer, semitonesFor } from "./transpose.svelte"
+import { audioBufferToWav, decodeAudioFromURL } from "./wav"
 
 export const DEFAULT_SORT = "relevance"
 export const PER_PAGE = 50
@@ -23,6 +25,8 @@ export const randomSeed = () =>
 export const dataStore = $state({
     sampleAssets: [] as SampleAsset[],
     descrambledSamples: new Map<string, string>(),
+    // Pitch-shifted preview blobs, keyed by `${uuid}:${semitones}`
+    transposedSamples: new Map<string, string>(),
     tags: [] as string[],
     tag_summary: [] as TagSummaryEntry[],
     total_records: 0,
@@ -176,6 +180,14 @@ export async function getDescrambledSampleURL(sampleAsset: SampleAsset) {
 }
 
 export function freeDescrambledSample(uuid: string) {
+    // Free any pitch-shifted variants of this sample first
+    for (const key of [...dataStore.transposedSamples.keys()]) {
+        if (key.startsWith(`${uuid}:`)) {
+            window.URL.revokeObjectURL(dataStore.transposedSamples.get(key)!)
+            dataStore.transposedSamples.delete(key)
+        }
+    }
+
     const existingBlobURL = dataStore.descrambledSamples.get(uuid)
     if (!existingBlobURL) return false
 
@@ -184,4 +196,55 @@ export function freeDescrambledSample(uuid: string) {
     console.info("⛓️‍💥 Freed descrambled sample")
 
     return true
+}
+
+/**
+ * Returns a blob URL of the sample pitch-shifted by `semitones`,
+ * rendering and caching it on first use.
+ */
+export async function getTransposedSampleURL(
+    sampleAsset: SampleAsset,
+    semitones: number
+) {
+    const cacheKey = `${sampleAsset.uuid}:${semitones}`
+    const existing = dataStore.transposedSamples.get(cacheKey)
+    if (existing) {
+        console.info("✔️ Reusing transposed sample blob")
+        return existing
+    }
+
+    loading.samples.add(sampleAsset.uuid)
+    loading.samplesCount++
+
+    try {
+        const descrambledURL = await getDescrambledSampleURL(sampleAsset)
+        const buffer = await decodeAudioFromURL(descrambledURL)
+        const shifted = pitchShiftAudioBuffer(buffer, semitones)
+        const wav = audioBufferToWav(shifted)
+        const blobURL = window.URL.createObjectURL(
+            new Blob([wav], { type: "audio/wav" })
+        )
+        dataStore.transposedSamples.set(cacheKey, blobURL)
+        console.info(`🎚️ Created transposed sample blob (${semitones} st)`)
+        return blobURL
+    } finally {
+        loading.samples.delete(sampleAsset.uuid)
+        loading.samplesCount--
+    }
+}
+
+/** Picks the right playback URL for a sample given the current transpose settings. */
+export async function getPlaybackSampleURL(sampleAsset: SampleAsset) {
+    const semitones = semitonesFor(sampleAsset)
+    if (!semitones) return await getDescrambledSampleURL(sampleAsset)
+    return await getTransposedSampleURL(sampleAsset, semitones)
+}
+
+/** Drops every cached pitch-shifted blob (e.g. after transpose settings change). */
+export function clearTransposedCache() {
+    for (const url of dataStore.transposedSamples.values()) {
+        window.URL.revokeObjectURL(url)
+    }
+    dataStore.transposedSamples.clear()
+    console.info("🧹 Cleared transposed sample cache")
 }

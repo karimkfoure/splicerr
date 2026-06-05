@@ -18,6 +18,7 @@
     import VolumeX from "lucide-svelte/icons/volume-x"
     import Volume1 from "lucide-svelte/icons/volume-1"
     import Volume2 from "lucide-svelte/icons/volume-2"
+    import TransposeDialog from "$lib/components/transpose-dialog.svelte"
 
     let {
         class: className,
@@ -151,6 +152,7 @@
             </div>
         {/if}
         <div class="flex items-center gap-2">
+            <TransposeDialog />
             <Button
                 variant="ghost"
                 size="icon-lg"

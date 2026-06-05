@@ -73,9 +73,7 @@ export const SoundsSearchAutocomplete = {
 
 // ---------------------------------------------------------------
 
-const GRAPHQL_URL = "https://surfaces-graphql.splice.com/graphql"
-
-import { fetch } from "@tauri-apps/plugin-http"
+import { invoke } from "@tauri-apps/api/core"
 
 export async function querySplice(
     template: QueryTemplate,
@@ -85,18 +83,20 @@ export async function querySplice(
     Object.assign(body.variables, variables)
     const startTime = Date.now()
     console.log("💌 Requesting", body)
-    let response = await fetch(GRAPHQL_URL, {
-        method: "POST",
-        body: JSON.stringify(body),
-        headers: {
-            "Content-Type": "application/json",
-        },
-    })
-    if (!response.ok) {
-        console.error(await response.text())
+    try {
+        // Routed through the `splice_graphql` Rust command, which relays the
+        // request through a hidden webview parked on the Splice origin. Splice's
+        // Cloudflare now serves a managed challenge to every native HTTP client
+        // (reqwest/curl/fetch all get a 403), so the request has to originate
+        // from a real browser engine. See src-tauri/src/lib.rs.
+        const text = await invoke<string>("splice_graphql", {
+            body: JSON.stringify(body),
+        })
+        const json = JSON.parse(text)
+        console.log("📬 Received", json, "after", Date.now() - startTime, "ms")
+        return json
+    } catch (error) {
+        console.error("⚠️ Splice query failed", error)
         return null
     }
-    const json = await response.json()
-    console.log("📬 Received", json, "after", Date.now() - startTime, "ms")
-    return json
 }

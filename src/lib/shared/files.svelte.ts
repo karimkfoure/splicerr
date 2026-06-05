@@ -3,6 +3,11 @@ import { join, sep } from "@tauri-apps/api/path"
 import { exists, create, mkdir } from "@tauri-apps/plugin-fs"
 import { getDescrambledSampleURL } from "./store.svelte"
 import { config, isSamplesDirValid } from "$lib/shared/config.svelte"
+import {
+    pitchShiftAudioBuffer,
+    semitonesFor,
+    transposeSuffix,
+} from "$lib/shared/transpose.svelte"
 import { encode } from "node-wav"
 import { Buffer } from "buffer"
 
@@ -10,8 +15,19 @@ globalThis.Buffer = Buffer // node-wav needs Buffer which is not defined when us
 
 const sanitizePath = (path: string) => path.replace(/[^a-zA-Z0-9#_\-\.\/]/g, "_")
 
-const sampleAssetPath = (sampleAsset: SampleAsset) =>
-    sanitizePath(`${sampleAsset.parents.items[0].name}/${sampleAsset.name}`)
+// Insert a suffix (e.g. transpose tag) right before the file extension.
+const withSuffix = (name: string, suffix: string) => {
+    if (!suffix) return name
+    const dot = name.lastIndexOf(".")
+    return dot === -1
+        ? name + suffix
+        : name.slice(0, dot) + suffix + name.slice(dot)
+}
+
+const sampleAssetPath = (sampleAsset: SampleAsset, suffix = "") =>
+    sanitizePath(
+        `${sampleAsset.parents.items[0].name}/${withSuffix(sampleAsset.name, suffix)}`
+    )
 
 async function ensureFileDirectoryExists(filePath: string) {
     const separator = sep()
@@ -26,7 +42,7 @@ async function ensureFileDirectoryExists(filePath: string) {
     }
 }
 
-export async function absoluteSamplePath(sampleAsset: SampleAsset) {
+export async function absoluteSamplePath(sampleAsset: SampleAsset, suffix = "") {
     if (!config.samples_dir) {
         throw new Error("❌ Samples Directory not set")
     }
@@ -35,11 +51,15 @@ export async function absoluteSamplePath(sampleAsset: SampleAsset) {
         throw new Error("❌ Samples Directory invalid")
     }
 
-    return await join(config.samples_dir, sampleAssetPath(sampleAsset))
+    return await join(config.samples_dir, sampleAssetPath(sampleAsset, suffix))
 }
 
 export async function saveSample(sampleAsset: SampleAsset) {
-    const absolutePath = await absoluteSamplePath(sampleAsset)
+    const semitones = semitonesFor(sampleAsset)
+    const absolutePath = await absoluteSamplePath(
+        sampleAsset,
+        transposeSuffix(semitones)
+    )
 
     if (!absolutePath) {
         throw new Error("❌ Invalid path")
@@ -58,7 +78,9 @@ export async function saveSample(sampleAsset: SampleAsset) {
 
     const buffer = await blob.arrayBuffer()
 
-    const samples = await new AudioContext().decodeAudioData(buffer)
+    const decoded = await new AudioContext().decodeAudioData(buffer)
+    // Apply tempo-preserving pitch shift before trimming/encoding (no-op when 0)
+    const samples = pitchShiftAudioBuffer(decoded, semitones)
     const channels: Float32Array[] = []
 
     for (let i = 0; i < samples.numberOfChannels; i++) {
