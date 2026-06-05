@@ -73,9 +73,22 @@ export const SoundsSearchAutocomplete = {
 
 // ---------------------------------------------------------------
 
-const GRAPHQL_URL = "https://surfaces-graphql.splice.com/graphql"
+import { invoke } from "@tauri-apps/api/core"
+import { terminalLog } from "$lib/shared/terminal-log"
 
-import { fetch } from "@tauri-apps/plugin-http"
+function tauriInvoke() {
+    const internals = (
+        globalThis as typeof globalThis & {
+            __TAURI_INTERNALS__?: { invoke: typeof invoke }
+        }
+    ).__TAURI_INTERNALS__
+    if (!internals?.invoke) {
+        throw new Error(
+            "Tauri IPC is not available. Use the Splicerr app window (pnpm tauri dev), not http://localhost:1337 in a browser."
+        )
+    }
+    return internals.invoke.bind(internals)
+}
 
 export async function querySplice(
     template: QueryTemplate,
@@ -84,19 +97,22 @@ export async function querySplice(
     const body = { ...template }
     Object.assign(body.variables, variables)
     const startTime = Date.now()
-    console.log("💌 Requesting", body)
-    let response = await fetch(GRAPHQL_URL, {
-        method: "POST",
-        body: JSON.stringify(body),
-        headers: {
-            "Content-Type": "application/json",
-        },
-    })
-    if (!response.ok) {
-        console.error(await response.text())
+    console.log("💌 Requesting (invoke)", body)
+    void terminalLog(`querySplice → ${body.operationName}`)
+    try {
+        const text = await tauriInvoke()<string>("splice_graphql", {
+            body: JSON.stringify(body),
+        })
+        const json = JSON.parse(text)
+        const ms = Date.now() - startTime
+        console.log("📬 Received", json, "after", ms, "ms")
+        void terminalLog(`querySplice ← ${body.operationName} ok (${ms}ms)`)
+        return json
+    } catch (error) {
+        const detail =
+            error instanceof Error ? error.message : String(error)
+        console.error("⚠️ Splice query failed", error)
+        void terminalLog(`querySplice ← ${body.operationName} failed: ${detail}`)
         return null
     }
-    const json = await response.json()
-    console.log("📬 Received", json, "after", Date.now() - startTime, "ms")
-    return json
 }

@@ -10,16 +10,24 @@
         "frontendDist": "../build"
     },
     "app": {
+        "withGlobalTauri": true,
         "windows": [
             {
                 "title": "Splicerr",
                 "width": 800,
-                "height": 600
+                "height": 600,
+                "devtools": true
             }
         ],
         "security": {
+            "pattern": {
+                "use": "brownfield"
+            },
             "csp": {
-                "connect-src": "'self' ipc: blob: http://ipc.localhost http://tauri.localhost https://*.splice.com/** https://spliceproduction.s3.*.amazonaws.com/** https://*.amazonaws.com/spliceblob.splice.com/** https://splice-res.cloudinary.com/**"
+                "default-src": "'self' ipc: http://ipc.localhost http://tauri.localhost",
+                "connect-src": "'self' ipc: blob: http://ipc.localhost http://tauri.localhost https://*.splice.com/** https://spliceproduction.s3.*.amazonaws.com/** https://*.amazonaws.com/spliceblob.splice.com/** https://splice-res.cloudinary.com/**",
+                "media-src": "'self' blob: data:",
+                "img-src": "'self' blob: data: https://*.splice.com https://splice-res.cloudinary.com https://*.amazonaws.com"
             }
         }
     },
@@ -33,5 +41,8 @@
             "icons/icon.icns",
             "icons/icon.ico"
         ]
+    },
+    "plugins": {
+        "http": null
     }
 }

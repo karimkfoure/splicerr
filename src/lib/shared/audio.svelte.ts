@@ -6,6 +6,7 @@ import {
     freeDescrambledSample,
     getDescrambledSampleURL,
 } from "$lib/shared/store.svelte"
+import { terminalLog } from "$lib/shared/terminal-log"
 
 let prevVolume = 0.8
 
@@ -21,7 +22,15 @@ export const globalAudio = $state({
         return this.currentTime / this.duration
     },
     togglePlay() {
-        this.paused = !this.paused
+        if (!this.ref) return
+        if (this.paused) {
+            void this.ref.play().then(() => {
+                this.paused = false
+            })
+        } else {
+            this.ref.pause()
+            this.paused = true
+        }
     },
     toggleMute() {
         if (this.volume > 0) {
@@ -55,6 +64,12 @@ export const globalAudio = $state({
         // TODO: this is kinda borked
     },
     async playSampleAsset(sampleAsset: SampleAsset, from: number = 0) {
+        void terminalLog(`play: ${sampleAsset.name.split("/").pop() ?? sampleAsset.uuid}`)
+        if (!this.ref) {
+            console.error("⚠️ Audio element not mounted yet")
+            void terminalLog("play: aborted — audio ref missing")
+            return
+        }
         if (loading.samples.has(sampleAsset.uuid)) {
             console.info("🐢 Already loading sample")
             return
@@ -73,12 +88,29 @@ export const globalAudio = $state({
         }
 
         this.currentAsset = sampleAsset
-        this.ref.src = await getDescrambledSampleURL(sampleAsset)
+        try {
+            this.ref.src = await getDescrambledSampleURL(sampleAsset)
+        } catch (error) {
+            console.error("⚠️ Failed to load sample", error)
+            this.ref.src = ""
+            this.loading = false
+            return
+        }
         if (this.currentAsset.uuid != sampleAsset.uuid) {
             return
         }
         this.ref.currentTime = from
         this.ref.loop = sampleAsset.asset_category_slug == "loop" && config.repeat_audio
-        this.ref.play()
+        try {
+            await this.ref.play()
+            this.paused = false
+            void terminalLog("play: started")
+        } catch (error) {
+            console.error("⚠️ Audio play() rejected", error)
+            void terminalLog(
+                `play: rejected ${error instanceof Error ? error.message : String(error)}`
+            )
+            this.paused = true
+        }
     },
 })

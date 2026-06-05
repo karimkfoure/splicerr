@@ -50,6 +50,13 @@
         oncanplaythrough={() => {
             globalAudio.loading = false
         }}
+        onerror={() => {
+            globalAudio.loading = false
+            console.error(
+                "⚠️ Audio element error",
+                globalAudio.ref.error?.message ?? globalAudio.ref.error?.code
+            )
+        }}
     ></audio>
     <input
         style="--progress: {globalAudio.progress() * 100 || 0}%"

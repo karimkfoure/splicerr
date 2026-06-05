@@ -1,0 +1,16 @@
+{
+    "$schema": "../gen/schemas/desktop-schema.json",
+    "identifier": "splice-proxy",
+    "description": "Hidden GraphQL proxy webview (remote origin + diagnostic invokes)",
+    "windows": ["splice-proxy"],
+    "remote": {
+        "urls": [
+            "https://surfaces-graphql.splice.com/**",
+            "https://*.splice.com/**"
+        ]
+    },
+    "permissions": [
+        "core:default",
+        "core:webview:allow-internal-toggle-devtools"
+    ]
+}

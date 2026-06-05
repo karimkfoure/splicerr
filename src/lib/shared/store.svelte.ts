@@ -13,6 +13,7 @@ import type {
 import { globalAudio } from "./audio.svelte"
 import { loading } from "./loading.svelte"
 import { fetch } from "@tauri-apps/plugin-http"
+import { terminalLog } from "$lib/shared/terminal-log"
 
 export const DEFAULT_SORT = "relevance"
 export const PER_PAGE = 50
@@ -93,6 +94,13 @@ export const fetchAssets = () => {
         limit: PER_PAGE,
     })
         .then((response) => {
+            if (!response?.data?.assetsSearch) {
+                throw new Error(
+                    response == null
+                        ? "Splice search returned no data (check console for API errors)"
+                        : "Unexpected Splice API response shape"
+                )
+            }
             const searchResult = (response as SamplesSearchResponse).data
                 .assetsSearch
             const identityAfterFetch = JSON.stringify(queryIdentity)
@@ -153,26 +161,42 @@ export async function getDescrambledSampleURL(sampleAsset: SampleAsset) {
     loading.samples.add(sampleAsset.uuid)
     loading.samplesCount++
 
-    const response = await fetch(sampleAsset.files[0].url)
+    try {
+        const previewUrl = sampleAsset.files[0].url
+        void terminalLog(
+            `preview: fetch → ${sampleAsset.uuid.slice(0, 8)}… ${previewUrl.slice(0, 80)}…`
+        )
+        const started = Date.now()
+        const response = await fetch(previewUrl)
+        if (!response.ok) {
+            throw new Error(
+                `Preview download failed HTTP ${response.status} for ${previewUrl}`
+            )
+        }
 
-    const data = new Uint8Array(await response.arrayBuffer())
+        const data = new Uint8Array(await response.arrayBuffer())
+        const descrambledData = descrambleSample(data)
 
-    const descrambledData = descrambleSample(data)
+        const blob = new Blob([descrambledData], {
+            type: "audio/mp3",
+        })
+        const blobURL = window.URL.createObjectURL(blob)
+        dataStore.descrambledSamples.set(sampleAsset.uuid, blobURL)
 
-    const blob = new Blob([descrambledData], {
-        type: "audio/mp3",
-    })
+        console.info("🔗 Created descrambled sample blob")
+        void terminalLog(
+            `preview: ← ok ${descrambledData.byteLength} bytes (${Date.now() - started}ms)`
+        )
 
-    const blobURL = window.URL.createObjectURL(blob)
-
-    dataStore.descrambledSamples.set(sampleAsset.uuid, blobURL)
-
-    loading.samples.delete(sampleAsset.uuid)
-    loading.samplesCount--
-
-    console.info("🔗 Created descrambled sample blob")
-
-    return blobURL
+        return blobURL
+    } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error)
+        void terminalLog(`preview: ← failed ${detail}`)
+        throw error
+    } finally {
+        loading.samples.delete(sampleAsset.uuid)
+        loading.samplesCount--
+    }
 }
 
 export function freeDescrambledSample(uuid: string) {
