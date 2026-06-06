@@ -39,7 +39,7 @@ import { config, isSamplesDirValid, settingsDialog } from "./config.svelte"
 export const DEFAULT_SORT = "relevance"
 export const PER_PAGE = 50
 /** Local SQLite search — one round-trip can safely return more than Splice API pages. */
-export const LIBRARY_PER_PAGE = 2500
+export const LIBRARY_PER_PAGE = 150
 
 export const LIBRARY_SORTS = [
     "name",
