@@ -28,7 +28,12 @@
         fetchAssets,
         DEFAULT_SORT,
         randomSeed,
+        browseStore,
+        resetAssetList,
+        ensureSpliceCompatibleSort,
+        ensureLibraryCompatibleSort,
     } from "$lib/shared/store.svelte"
+    import { isSamplesDirValid } from "$lib/shared/config.svelte"
     import SettingsDialog from "$lib/components/settings-dialog.svelte"
     import KeySelect from "$lib/components/key-select.svelte"
 
@@ -67,6 +72,20 @@
     let tagsContainerRef = $state<HTMLElement>(null!)
     let tagsDrawerRef = $state<HTMLElement>(null!)
     let searchInputRef = $state<HTMLInputElement>(null!)
+    let online = $state(
+        typeof navigator !== "undefined" ? navigator.onLine : true
+    )
+
+    const setBrowseMode = (mode: "splice" | "library") => {
+        browseStore.mode = mode
+        if (mode === "library") {
+            ensureLibraryCompatibleSort()
+        } else {
+            ensureSpliceCompatibleSort()
+        }
+        resetAssetList()
+        fetchAssets()
+    }
 
     const selectedSampleIndex = $derived(
         dataStore.sampleAssets.findIndex(
@@ -85,6 +104,16 @@
             queryStore.sort = newSort
             queryStore.order = "DESC"
         }
+        resetAssetList()
+        fetchAssets()
+    }
+
+    const onSortSelect = (newSort: string) => {
+        if (queryStore.sort !== newSort) {
+            queryStore.order = "DESC"
+        }
+        queryStore.sort = newSort as AssetSortType
+        resetAssetList()
         fetchAssets()
     }
 
@@ -129,6 +158,11 @@
     //     )
 
     onMount(() => {
+        const onOnline = () => (online = true)
+        const onOffline = () => (online = false)
+        window.addEventListener("online", onOnline)
+        window.addEventListener("offline", onOffline)
+
         viewportRef.addEventListener("scroll", () => {
             if (
                 !loading.assets &&
@@ -144,11 +178,48 @@
         searchInputRef.focus()
 
         fetchAssets()
+
+        return () => {
+            window.removeEventListener("online", onOnline)
+            window.removeEventListener("offline", onOffline)
+        }
     })
 </script>
 
 <main class="flex flex-col size-full">
     <div class="flex flex-col p-4 gap-4">
+        {#if !online}
+            <p class="text-sm text-muted-foreground rounded-md border px-3 py-2">
+                You're offline. Splice search may fail; use
+                <strong>My library</strong> to browse downloaded samples.
+            </p>
+        {/if}
+        <div class="flex gap-2 items-center">
+            <Button
+                variant={browseStore.mode === "splice" ? "default" : "outline"}
+                size="sm"
+                onclick={() => setBrowseMode("splice")}>Splice</Button
+            >
+            <Button
+                variant={browseStore.mode === "library" ? "default" : "outline"}
+                size="sm"
+                onclick={() => setBrowseMode("library")}>My library</Button
+            >
+            {#if browseStore.mode === "library"}
+                <Button
+                    variant={browseStore.libraryFavoritesOnly
+                        ? "default"
+                        : "outline"}
+                    size="sm"
+                    onclick={() => {
+                        browseStore.libraryFavoritesOnly =
+                            !browseStore.libraryFavoritesOnly
+                        resetAssetList()
+                        fetchAssets()
+                    }}>Favorites only</Button
+                >
+            {/if}
+        </div>
         <div class="flex gap-4 justify-between items-center">
             <SettingsDialog />
             <SearchInput
@@ -160,13 +231,19 @@
             <KeySelect
                 bind:key={queryStore.key}
                 bind:chord_type={queryStore.chord_type}
-                onselect={fetchAssets}
+                onselect={() => {
+                    resetAssetList()
+                    fetchAssets()
+                }}
             />
             <BpmSelect
                 bind:bpm={queryStore.bpm}
                 bind:min_bpm={queryStore.min_bpm}
                 bind:max_bpm={queryStore.max_bpm}
-                onsubmit={fetchAssets}
+                onsubmit={() => {
+                    resetAssetList()
+                    fetchAssets()
+                }}
             />
             <AssetCategorySelect
                 bind:asset_category_slug={queryStore.asset_category_slug}
@@ -248,20 +325,23 @@
             <div class="text-muted-foreground text-xs flex-grow">
                 {dataStore.total_records.toLocaleString()} results
             </div>
-            <Button
-                variant="outline"
-                size="icon"
-                onclick={() => {
-                    queryStore.random_seed = randomSeed()
-                    queryStore.sort = "random"
-                    fetchAssets()
-                }}
-            >
-                <Shuffle />
-            </Button>
+            {#if browseStore.mode === "splice"}
+                <Button
+                    variant="outline"
+                    size="icon"
+                    onclick={() => {
+                        queryStore.random_seed = randomSeed()
+                        queryStore.sort = "random"
+                        fetchAssets()
+                    }}
+                >
+                    <Shuffle />
+                </Button>
+            {/if}
             <SortSelect
                 bind:sort={queryStore.sort}
-                onselect={fetchAssets}
+                mode={browseStore.mode}
+                onselect={onSortSelect}
                 order={queryStore.order}
             />
         </div>
@@ -371,6 +451,14 @@
                         <p class="font-bold text-xl">Something went wrong :/</p>
                         <p class="text-sm">Couldn't load any samples</p>
                         <Button onclick={fetchAssets}>Retry</Button>
+                    {:else if browseStore.mode === "library" &&
+                        !isSamplesDirValid()}
+                        <Search size="48" />
+                        <p class="font-bold text-xl">Samples folder required</p>
+                        <p class="text-sm">
+                            Set a valid Samples Directory in Settings to use your
+                            library.
+                        </p>
                     {:else if loading.beforeFirstLoad}
                         <Smile size="48" />
                         <p class="font-bold text-xl">Hey there!</p>

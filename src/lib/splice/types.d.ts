@@ -71,6 +71,9 @@ export type SampleAsset = {
     key?: string
     duration: number
     asset_category_slug: AssetCategorySlug
+    display_file_path?: string | null
+    display_name?: string | null
+    favorite?: boolean
 }
 
 export type PackAsset = {
@@ -79,6 +82,8 @@ export type PackAsset = {
     uuid: string
     name: string
     files: Array<AssetFile>
+    /** HTTPS cover URL persisted in local library DB (offline re-fetch). */
+    cover_source_url?: string | null
     __typename: string
 }
 
@@ -111,6 +116,7 @@ export type AssetSortType =
     | "duration"
     | "key"
     | "name"
+    | "ingested_at"
 
 export type AssetTypeSlug = "sample" | "preset" | "pack"
 

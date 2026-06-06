@@ -19,6 +19,7 @@
     import Volume1 from "lucide-svelte/icons/volume-1"
     import Volume2 from "lucide-svelte/icons/volume-2"
     import TransposeDialog from "$lib/components/transpose-dialog.svelte"
+    import { sampleDisplayFileName } from "$lib/shared/sample-path"
 
     let {
         class: className,
@@ -34,7 +35,14 @@
     } = $props()
 
     const currentPack = $derived(globalAudio.currentAsset?.parents.items[0])
-    const currentName = $derived(globalAudio.currentAsset?.name.split("/").slice(-1)[0])
+    const currentName = $derived(
+        globalAudio.currentAsset
+            ? sampleDisplayFileName(
+                  globalAudio.currentAsset.display_name ??
+                      globalAudio.currentAsset.name
+              )
+            : ""
+    )
 </script>
 
 <div class={cn("flex flex-col w-full", className)} {...restProps}>

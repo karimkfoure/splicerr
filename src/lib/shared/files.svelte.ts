@@ -1,37 +1,25 @@
 import type { SampleAsset } from "$lib/splice/types"
 import { join, sep } from "@tauri-apps/api/path"
-import { exists, create, mkdir } from "@tauri-apps/plugin-fs"
-import { getDescrambledSampleURL } from "./store.svelte"
+import { exists, create, mkdir, readFile } from "@tauri-apps/plugin-fs"
 import { config, isSamplesDirValid } from "$lib/shared/config.svelte"
 import {
-    pitchShiftAudioBuffer,
-    semitonesFor,
-    transposeSuffix,
-} from "$lib/shared/transpose.svelte"
-import { encode } from "node-wav"
-import { Buffer } from "buffer"
+    fetchDescrambledMp3Bytes,
+    mp3BlobUrl,
+} from "$lib/shared/sample-bytes"
+import { fetch } from "@tauri-apps/plugin-http"
+import { waveformRelativePath } from "$lib/shared/waveform-data"
+import { ensurePackCoverOnDisk as cachePackCover } from "$lib/shared/pack-cover"
+import { sampleRelativePathFromAsset } from "$lib/shared/sample-path"
 
-globalThis.Buffer = Buffer // node-wav needs Buffer which is not defined when using Vite
-
-const sanitizePath = (path: string) => path.replace(/[^a-zA-Z0-9#_\-\.\/]/g, "_")
-
-// Insert a suffix (e.g. transpose tag) right before the file extension.
-const withSuffix = (name: string, suffix: string) => {
-    if (!suffix) return name
-    const dot = name.lastIndexOf(".")
-    return dot === -1
-        ? name + suffix
-        : name.slice(0, dot) + suffix + name.slice(dot)
+export function sampleRelativePath(sampleAsset: SampleAsset) {
+    return sampleRelativePathFromAsset(sampleAsset)
 }
 
-const sampleAssetPath = (sampleAsset: SampleAsset, suffix = "") =>
-    sanitizePath(
-        `${sampleAsset.parents.items[0].name}/${withSuffix(sampleAsset.name, suffix)}`
-    )
+export { waveformRelativePath }
 
 async function ensureFileDirectoryExists(filePath: string) {
     const separator = sep()
-    const dirs = filePath.split(separator).slice(0, -1) // Remove the filename
+    const dirs = filePath.split(separator).slice(0, -1)
     let currentPath = ""
 
     for (const dir of dirs) {
@@ -42,7 +30,7 @@ async function ensureFileDirectoryExists(filePath: string) {
     }
 }
 
-export async function absoluteSamplePath(sampleAsset: SampleAsset, suffix = "") {
+export async function absoluteSamplePath(sampleAsset: SampleAsset) {
     if (!config.samples_dir) {
         throw new Error("❌ Samples Directory not set")
     }
@@ -51,123 +39,111 @@ export async function absoluteSamplePath(sampleAsset: SampleAsset, suffix = "") 
         throw new Error("❌ Samples Directory invalid")
     }
 
-    return await join(config.samples_dir, sampleAssetPath(sampleAsset, suffix))
+    return await join(config.samples_dir, sampleRelativePath(sampleAsset))
 }
 
-export async function saveSample(sampleAsset: SampleAsset) {
-    const semitones = semitonesFor(sampleAsset)
-    const absolutePath = await absoluteSamplePath(
-        sampleAsset,
-        transposeSuffix(semitones)
-    )
+export async function readSampleMp3Bytes(
+    sampleAsset: SampleAsset
+): Promise<Uint8Array | null> {
+    if (!isSamplesDirValid()) return null
+    const absolutePath = await absoluteSamplePath(sampleAsset)
+    if (!(await exists(absolutePath))) return null
+    return await readFile(absolutePath)
+}
 
-    if (!absolutePath) {
-        throw new Error("❌ Invalid path")
+export async function ensureWaveformSidecar(
+    sampleAsset: SampleAsset,
+    relativeAudioPath: string
+): Promise<string | null> {
+    if (!config.samples_dir || !isSamplesDirValid()) return null
+
+    const wfRel = waveformRelativePath(relativeAudioPath)
+    const wfAbs = await join(config.samples_dir, wfRel)
+    if (await exists(wfAbs)) return wfRel
+
+    const waveUrl = sampleAsset.files[1]?.url
+    if (!waveUrl) return null
+
+    try {
+        const response = await fetch(waveUrl)
+        if (!response.ok) return null
+        const buffer = await response.arrayBuffer()
+        await ensureFileDirectoryExists(wfAbs)
+        const file = await create(wfAbs)
+        await file.write(new Uint8Array(buffer))
+        await file.close()
+        return wfRel
+    } catch (e) {
+        console.warn("⚠️ Waveform cache failed", e)
+        return null
     }
+}
+
+export type MaterializedSample = {
+    absolutePath: string
+    relativePath: string
+    bytes: Uint8Array
+    waveformRelativePath: string | null
+    wroteNewAudio: boolean
+}
+
+export async function ensureSampleMp3OnDisk(
+    sampleAsset: SampleAsset,
+    options?: { cacheWaveform?: boolean }
+): Promise<MaterializedSample> {
+    if (!config.samples_dir || !isSamplesDirValid()) {
+        throw new Error("❌ Samples Directory not set")
+    }
+
+    const relativePath = sampleRelativePath(sampleAsset)
+    const absolutePath = await join(config.samples_dir, relativePath)
+
+    let bytes: Uint8Array
+    let wroteNewAudio = false
 
     if (await exists(absolutePath)) {
-        console.log("🗃️ Sample already exists at", absolutePath)
-        return absolutePath
+        bytes = await readFile(absolutePath)
+    } else {
+        bytes = await fetchDescrambledMp3Bytes(sampleAsset)
+        await ensureFileDirectoryExists(absolutePath)
+        const file = await create(absolutePath)
+        await file.write(bytes)
+        await file.close()
+        wroteNewAudio = true
+        console.log("💾 Saved sample MP3 at", absolutePath)
     }
 
-    const blobURL = await getDescrambledSampleURL(sampleAsset)
-
-    const response = await fetch(blobURL)
-
-    const blob = await response.blob()
-
-    const buffer = await blob.arrayBuffer()
-
-    const decoded = await new AudioContext().decodeAudioData(buffer)
-    // Apply tempo-preserving pitch shift before trimming/encoding (no-op when 0)
-    const samples = pitchShiftAudioBuffer(decoded, semitones)
-    const channels: Float32Array[] = []
-
-    for (let i = 0; i < samples.numberOfChannels; i++) {
-        const channel = samples.getChannelData(i)
-        
-        // Calculate 12ms in samples based on the actual sample rate
-        const trimSamples = config.cut_mp3_delay ? Math.floor(samples.sampleRate * 0.012) : 0
-        
-        const start = trimSamples
-        const end = (sampleAsset.duration / 1000) * samples.sampleRate + start
-        
-        // Make sure we don't try to slice beyond the available data
-        const safeEnd = Math.min(end, channel.length)
-        
-        channels.push(channel.subarray(start, safeEnd))
+    let waveformRelativePath: string | null = null
+    if (options?.cacheWaveform !== false) {
+        waveformRelativePath = await ensureWaveformSidecar(
+            sampleAsset,
+            relativePath
+        )
     }
 
-    const wavData = encode(channels as any, {
-        bitDepth: 16,
-        sampleRate: samples.sampleRate,
-    })
+    await cachePackCover(sampleAsset)
 
-    console.log("🏆 Sample converted! Saving at", absolutePath)
+    return {
+        absolutePath,
+        relativePath,
+        bytes,
+        waveformRelativePath,
+        wroteNewAudio,
+    }
+}
 
-    await ensureFileDirectoryExists(absolutePath)
-
-    const file = await create(absolutePath)
-    await file.write(new Uint8Array(wavData))
-    await file.close()
-
-    console.log("🎉 Success!")
-
+/** @deprecated use ensureSampleMp3OnDisk */
+export async function saveSample(sampleAsset: SampleAsset) {
+    const { absolutePath } = await ensureSampleMp3OnDisk(sampleAsset)
     return absolutePath
 }
 
-export async function absolutePackImagePath(sampleAsset: SampleAsset) {
-    if (!config.samples_dir) {
-        throw new Error("❌ Samples Directory not set")
-    }
-
-    if (!isSamplesDirValid()) {
-        throw new Error("❌ Samples Directory invalid")
-    }
-
-    const pack = sampleAsset.parents.items[0]
-    const packDir = sanitizePath(pack.name)
-    return await join(config.samples_dir, packDir, "cover.jpg")
-}
+export {
+    ensurePackCoverOnDisk,
+    absolutePackCoverPath,
+} from "$lib/shared/pack-cover"
 
 export async function savePackImage(sampleAsset: SampleAsset) {
-    const pack = sampleAsset.parents.items[0]
-    const packImageUrl = pack?.files[0].url
-
-    const absolutePath = await absolutePackImagePath(sampleAsset)
-
-    if (!absolutePath) {
-        throw new Error("❌ Invalid path")
-    }
-
-    if (await exists(absolutePath)) {
-        console.log("🗃️ Image already exists at", absolutePath)
-        return absolutePath
-    }
-
-    try {
-        const response = await fetch(packImageUrl)
-        if (!response.ok) throw new Error("Failed to fetch image")
-        const buffer = await response.arrayBuffer()
-
-        console.log("🖼️ Saving pack image at", absolutePath)
-
-        await ensureFileDirectoryExists(absolutePath)
-
-        const file = await create(absolutePath)
-        await file.write(new Uint8Array(buffer))
-        await file.close()
-
-        console.log("🎉 Pack image saved!")
-
-        return absolutePath
-    } catch (e: any) {
-        console.log(e.message)
-        if (e instanceof TypeError && (e.message.includes("Failed to fetch") || e.message.includes("Load failed"))) {
-            console.warn("⚠️ CORS error or network issue when fetching pack image", e)
-            return null
-        }
-        throw e
-    }
+    const { ensurePackCoverOnDisk } = await import("$lib/shared/pack-cover")
+    return ensurePackCoverOnDisk(sampleAsset)
 }
-

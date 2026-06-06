@@ -5,7 +5,9 @@ import {
     dataStore,
     freeDescrambledSample,
     getPlaybackSampleURL,
+    SamplesDirRequiredError,
 } from "$lib/shared/store.svelte"
+import { isSamplesDirValid, settingsDialog } from "$lib/shared/config.svelte"
 
 let prevVolume = 0.8
 
@@ -73,11 +75,23 @@ export const globalAudio = $state({
         }
 
         this.currentAsset = sampleAsset
-        this.ref.src = await getPlaybackSampleURL(sampleAsset)
+        if (!isSamplesDirValid()) {
+            settingsDialog.open = true
+            return
+        }
+        try {
+            this.ref.src = await getPlaybackSampleURL(sampleAsset)
+        } catch (e) {
+            if (e instanceof SamplesDirRequiredError) {
+                settingsDialog.open = true
+            }
+            throw e
+        }
         if (this.currentAsset.uuid != sampleAsset.uuid) {
             return
         }
-        this.ref.currentTime = from
+        const delay = config.cut_mp3_delay ? 0.012 : 0
+        this.ref.currentTime = from > 0 ? from : delay
         this.ref.loop = sampleAsset.asset_category_slug == "loop" && config.repeat_audio
         this.ref.play()
     },

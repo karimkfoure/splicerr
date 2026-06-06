@@ -2,76 +2,63 @@
     import * as Select from "$lib/components/ui/select/index"
     import ChevronDown from "lucide-svelte/icons/chevron-down"
     import { cn } from "$lib/utils"
-    import type { SortOrder } from "$lib/splice/types"
+    import type { AssetSortType, SortOrder } from "$lib/splice/types"
+    import type { BrowseMode } from "$lib/library/api"
 
     let {
         sort = $bindable(),
         onselect,
         order,
+        mode = "splice",
     }: {
         sort: string
-        onselect: () => void
+        onselect: (value: string) => void
         order: SortOrder
+        mode?: BrowseMode
     } = $props()
 
-    const options = [
-        {
-            value: "random",
-            label: "Random",
-        },
-        {
-            value: "relevance",
-            label: "Most relevant",
-        },
-        {
-            value: "popularity",
-            label: "Most popular",
-        },
-        {
-            value: "recency",
-            label: "Most recent",
-        },
-    ]
+    const spliceOptions = [
+        { value: "random", label: "Random" },
+        { value: "relevance", label: "Most relevant" },
+        { value: "popularity", label: "Most popular" },
+        { value: "recency", label: "Most recent" },
+    ] as const
 
-    const ordered = [
-        {
-            value: "name",
-            label: "Filename",
-        },
-        {
-            value: "duration",
-            label: "Time",
-        },
-        {
-            value: "key",
-            label: "Key",
-        },
-        {
-            value: "bpm",
-            label: "BPM",
-        },
-    ]
+    const libraryOptions = [
+        { value: "ingested_at", label: "Recently added" },
+        { value: "name", label: "Filename" },
+        { value: "duration", label: "Time" },
+        { value: "key", label: "Key" },
+        { value: "bpm", label: "BPM" },
+    ] as const
+
+    const options = $derived(
+        mode === "library" ? [...libraryOptions] : [...spliceOptions]
+    )
+
+    const orderedSorts = new Set(
+        libraryOptions.map((o) => o.value).filter((v) => v !== "random")
+    )
 
     let triggerLabel = $state("")
     let showOrder = $state(false)
 
     $effect(() => {
-        const orderedLabel = ordered.find(
-            (option) => option.value === sort
-        )?.label
-        if (orderedLabel) {
-            triggerLabel = orderedLabel
-            showOrder = true
-        } else {
-            triggerLabel =
-                options.find((option) => option.value === sort)?.label ??
-                "Sort by..."
-            showOrder = false
-        }
+        const label = options.find((option) => option.value === sort)?.label
+        triggerLabel = label ?? "Sort by..."
+        showOrder =
+            mode === "library" &&
+            orderedSorts.has(sort as AssetSortType)
     })
 </script>
 
-<Select.Root type="single" bind:value={sort} onValueChange={() => onselect()}>
+<Select.Root
+    type="single"
+    bind:value={sort}
+    onValueChange={(value) => {
+        if (value) onselect(value)
+    }}
+>
     <Select.Trigger class="w-[180px]">
         <div class="flex items-center">
             {triggerLabel}
@@ -88,8 +75,7 @@
     </Select.Trigger>
     <Select.Content>
         <Select.Group>
-            <Select.GroupHeading
-                class="text-xs text-muted-foreground font-normal"
+            <Select.GroupHeading class="text-xs text-muted-foreground font-normal"
                 >Sort by</Select.GroupHeading
             >
             {#each options as option}

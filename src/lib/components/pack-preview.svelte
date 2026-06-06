@@ -2,6 +2,13 @@
     import * as HoverCard from "$lib/components/ui/hover-card/index.js"
     import type { PackAsset } from "$lib/splice/types"
     import { openUrl } from "@tauri-apps/plugin-opener"
+    import { inLibraryState } from "$lib/library/session-cache.svelte"
+    import {
+        isRemoteUrl,
+        localPackCoverAssetUrl,
+        resolvePackCoverRemoteUrl,
+    } from "$lib/shared/pack-cover"
+
     const {
         pack,
         side = "right",
@@ -15,7 +22,27 @@
     } = $props()
 
     const name = $derived(pack?.name.split("/").slice(-1)[0])
-    const imgSrc = $derived(pack?.files[0].url)
+    let displaySrc = $state("")
+    let imgFailed = $state(false)
+
+    $effect(() => {
+        void inLibraryState.version
+        const packName = pack?.name
+        const remote = pack ? resolvePackCoverRemoteUrl(pack) : undefined
+        imgFailed = false
+        if (!packName) {
+            displaySrc = ""
+            return
+        }
+        void (async () => {
+            const local = await localPackCoverAssetUrl(packName)
+            if (local) {
+                displaySrc = local
+                return
+            }
+            displaySrc = isRemoteUrl(remote) ? remote! : ""
+        })()
+    })
 
     const packURL = $derived(
         `https://splice.com/sounds/packs/${pack?.permalink_base_url}/${pack?.permalink_slug}`
@@ -26,19 +53,39 @@
     <HoverCard.Root>
         <HoverCard.Trigger
             class="flex-shrink-0"
-            onclick={() => pack && openUrl(packURL)}
+            onclick={() => pack && pack.permalink_slug && openUrl(packURL)}
         >
-            <img
-                src={imgSrc}
-                alt={name}
-                class={`size-${size} rounded`}
-                draggable="false"
-            />
+            {#if displaySrc && !imgFailed}
+                <img
+                    src={displaySrc}
+                    alt={name}
+                    class={`size-${size} rounded`}
+                    draggable="false"
+                    onerror={() => (imgFailed = true)}
+                />
+            {:else}
+                <div
+                    class={`size-${size} rounded bg-muted flex items-center justify-center text-[10px] text-muted-foreground px-0.5 text-center leading-tight`}
+                    title={name}
+                >
+                    Pack
+                </div>
+            {/if}
         </HoverCard.Trigger>
         <HoverCard.Content {side} class="flex flex-col justify-center gap-2">
-            <button onclick={() => pack && openUrl(packURL)}>
-                <img src={imgSrc} alt={name} class="w-full rounded" />
-            </button>
+            {#if displaySrc && !imgFailed}
+                <button
+                    type="button"
+                    onclick={() => pack && pack.permalink_slug && openUrl(packURL)}
+                >
+                    <img
+                        src={displaySrc}
+                        alt={name}
+                        class="w-full rounded"
+                        onerror={() => (imgFailed = true)}
+                    />
+                </button>
+            {/if}
             <p>{name}</p>
         </HoverCard.Content>
     </HoverCard.Root>

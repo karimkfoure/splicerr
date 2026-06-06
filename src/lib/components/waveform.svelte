@@ -1,8 +1,7 @@
 <script lang="ts">
     import { loading } from "$lib/shared/loading.svelte"
     import { uid } from "$lib/shared/uid"
-    import { fetch } from "@tauri-apps/plugin-http"
-    import pako from "pako"
+    import { loadWaveformFromSrc } from "$lib/shared/waveform-data"
     import { inview } from "svelte-inview"
     import { cn } from "$lib/utils"
 
@@ -39,39 +38,25 @@
     })
 
     function fetchWaveform() {
+        if (!src) return
         isLoading = true
         loading.waveformsCount += 1
         const loadingSrc = src
-        fetch(src)
-            .then((resp) => {
+        loadWaveformFromSrc(loadingSrc)
+            .then((data) => {
                 if (loadingSrc == src) {
-                    if (resp.headers.get("content-encoding") == "gzip") {
-                        resp.arrayBuffer().then((buff) => {
-                            const inflated = pako.inflate(
-                                new Uint8Array(buff),
-                                {
-                                    to: "string",
-                                }
-                            )
-                            waveform = JSON.parse(inflated)
-                        })
-                    } else {
-                        resp.json().then((json) => {
-                            waveform = json
-                        })
-                    }
+                    waveform = data
                     loadedSrc = src
-                    loading.waveformsCount -= 1
-                    isLoading = false
                 } else {
                     console.info("🕜 Ignored stale waveform")
-                    loading.waveformsCount -= 1
-                    isLoading = false
                 }
             })
             .catch((error: Error) => {
                 console.error("⚠️ Failed loading waveform", error)
+            })
+            .finally(() => {
                 loading.waveformsCount -= 1
+                isLoading = false
             })
     }
 

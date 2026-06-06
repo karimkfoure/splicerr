@@ -4,6 +4,9 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
+
+mod library;
+use library::LibraryState;
 use tokio::sync::{oneshot, Notify};
 
 /// The Splice GraphQL endpoint. The hidden bridge webview is parked on this exact
@@ -150,10 +153,18 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_drag::init())
         .manage(BridgeState::default())
+        .manage(LibraryState::default())
         .invoke_handler(tauri::generate_handler![
             splice_graphql,
             splice_response,
-            splice_bridge_ready
+            splice_bridge_ready,
+            library::library_open,
+            library::library_close,
+            library::library_upsert_from_asset,
+            library::library_batch_flags,
+            library::library_set_favorite,
+            library::library_search,
+            library::library_tag_summary,
         ])
         .setup(|app| {
             // Hidden webview parked on the Splice GraphQL host. Navigating here

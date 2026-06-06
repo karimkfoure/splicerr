@@ -3,6 +3,7 @@
     import { cn } from "$lib/utils"
     import ChevronDown from "lucide-svelte/icons/chevron-down"
     import { Slider } from "$lib/components/ui/slider/index.js"
+    import { Button } from "$lib/components/ui/button/index.js"
     import { tick } from "svelte"
 
     const MIN_BPM = 40
@@ -29,6 +30,16 @@
     let inputRange = $state([100, 120])
     let isKeyboardInput = false
 
+    function clearBpmFilter() {
+        bpm = null
+        min_bpm = null
+        max_bpm = null
+        inputText = ""
+        inputRange = [100, 120]
+        open = false
+        onsubmit()
+    }
+
     let open = $state(false)
 
     let timer: NodeJS.Timeout
@@ -40,15 +51,11 @@
     }
 
     const handleBlur = (event: FocusEvent) => {
-        // TODO: Make slider unfocusable, otherwise we get stuck in the bpm-select
-        if (
-            event.relatedTarget == cardRef ||
-            cardRef.contains(event.relatedTarget as Node)
-        ) {
-            inputRef.focus()
-        } else {
-            open = false
+        const next = event.relatedTarget as Node | null
+        if (next && cardRef?.contains(next)) {
+            return
         }
+        open = false
     }
 
     const handleInput = () => {
@@ -59,6 +66,14 @@
         const cleaned = inputText.replace(/[^\d\s-]/g, "").trimStart()
         const unchanged = cleaned === inputText
         inputText = cleaned
+        if (cleaned.trim() === "") {
+            bpm = null
+            min_bpm = null
+            max_bpm = null
+            inputRange = [100, 120]
+            debounce(onsubmit)
+            return
+        }
         if (unchanged) {
             const matches =
                 Array.from(
@@ -146,11 +161,23 @@
             <Card
                 bind:ref={cardRef}
                 class={cn("flex-col rounded-md p-1", open ? "flex" : "hidden")}
+                onmousedown={(e) => e.preventDefault()}
             >
+                <Button
+                    variant="ghost"
+                    size="sm"
+                    class="w-full justify-start font-normal h-8"
+                    onmousedown={(e) => {
+                        e.preventDefault()
+                        clearBpmFilter()
+                    }}
+                >
+                    Any BPM
+                </Button>
                 <div
                     class="px-2 py-1.5 text-xs text-muted-foreground font-normal"
                 >
-                    BPM Range
+                    BPM range
                 </div>
                 <div class="p-3">
                     <Slider

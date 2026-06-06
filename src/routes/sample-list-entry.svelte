@@ -14,7 +14,26 @@
     import { cn, formatKey } from "$lib/utils"
     import { loading } from "$lib/shared/loading.svelte"
     import { assetIcons } from "$lib/shared/icons.svelte"
-    import {handleSampleDrag} from "$lib/shared/drag.svelte"
+    import {
+        handleSampleDrag,
+        handleSampleDownload,
+    } from "$lib/shared/drag.svelte"
+    import Download from "lucide-svelte/icons/download"
+    import Check from "lucide-svelte/icons/check"
+    import Star from "lucide-svelte/icons/star"
+    import {
+        getCachedInLibrary,
+        getCachedFavorite,
+        inLibraryState,
+        setCachedFavorite,
+        setCachedInLibrary,
+    } from "$lib/library/session-cache.svelte"
+    import { librarySetFavorite } from "$lib/library/api"
+    import {
+        queueFavoriteMaterialization,
+    } from "$lib/shared/store.svelte"
+    import { sampleRelativePath } from "$lib/shared/files.svelte"
+    import { sampleDisplayFileName } from "$lib/shared/sample-path"
 
     let {
         class: className,
@@ -29,6 +48,17 @@
     } = $props()
 
     let playButtonRef = $state<HTMLButtonElement>(null!)
+    let downloading = $state(false)
+    let favoriting = $state(false)
+
+    const inLibrary = $derived(
+        inLibraryState.version >= 0 &&
+            getCachedInLibrary(sampleAsset.uuid)
+    )
+    const isFavorite = $derived(
+        inLibraryState.version >= 0 &&
+            (sampleAsset.favorite ?? getCachedFavorite(sampleAsset.uuid))
+    )
 
     $effect(() => {
         if (selected) {
@@ -37,7 +67,11 @@
     })
 
     const pack = $derived(sampleAsset.parents.items[0])
-    const name = $derived(sampleAsset.name.split("/").slice(-1))
+    const name = $derived(
+        sampleAsset.display_name
+            ? sampleDisplayFileName(sampleAsset.display_name)
+            : sampleDisplayFileName(sampleAsset.name)
+    )
 
     const millisToMinutesAndSeconds = (millis: number) => {
         var minutes = Math.floor(millis / 60000)
@@ -145,4 +179,76 @@
     <div class="text-muted-foreground flex-shrink-0 w-14 flex-grow">
         {sampleAsset.bpm ?? "--"}
     </div>
+    <Tooltip.Provider>
+        <Tooltip.Root>
+            <Tooltip.Trigger>
+                <Button
+                    variant="ghost"
+                    class="flex-shrink-0 text-muted-foreground"
+                    size="icon"
+                    disabled={favoriting}
+                    onclick={async (e) => {
+                        e.stopPropagation()
+                        favoriting = true
+                        try {
+                            const next = !isFavorite
+                            await librarySetFavorite(
+                                sampleAsset.uuid,
+                                next,
+                                sampleAsset,
+                                sampleRelativePath(sampleAsset)
+                            )
+                            setCachedFavorite(sampleAsset.uuid, next)
+                            sampleAsset.favorite = next
+                            if (next) {
+                                await queueFavoriteMaterialization(sampleAsset)
+                            }
+                        } finally {
+                            favoriting = false
+                        }
+                    }}
+                >
+                    <Star
+                        class={cn(
+                            isFavorite && "fill-amber-400 text-amber-400"
+                        )}
+                    />
+                </Button>
+            </Tooltip.Trigger>
+            <Tooltip.Content>Favorite</Tooltip.Content>
+        </Tooltip.Root>
+    </Tooltip.Provider>
+    <Tooltip.Provider>
+        <Tooltip.Root>
+            <Tooltip.Trigger>
+                <Button
+                    variant="ghost"
+                    class="flex-shrink-0 text-muted-foreground"
+                    size="icon"
+                    disabled={downloading || inLibrary}
+                    onclick={async (e) => {
+                        e.stopPropagation()
+                        downloading = true
+                        try {
+                            await handleSampleDownload(sampleAsset)
+                            setCachedInLibrary(sampleAsset.uuid, true)
+                        } finally {
+                            downloading = false
+                        }
+                    }}
+                >
+                    {#if downloading}
+                        <LoaderCircle class="animate-spin" />
+                    {:else if inLibrary}
+                        <Check />
+                    {:else}
+                        <Download />
+                    {/if}
+                </Button>
+            </Tooltip.Trigger>
+            <Tooltip.Content
+                >{inLibrary ? "In library" : "Download"}</Tooltip.Content
+            >
+        </Tooltip.Root>
+    </Tooltip.Provider>
 </button>

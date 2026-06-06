@@ -60,6 +60,14 @@
         <input
             bind:value
             bind:this={inputRef}
+            type="search"
+            name="splicerr-sample-search"
+            autocomplete="off"
+            autocorrect="off"
+            autocapitalize="off"
+            spellcheck={false}
+            data-1p-ignore
+            data-lpignore="true"
             placeholder="Search samples..."
             onfocus={() => (open = true)}
             onblur={() => (open = false)}

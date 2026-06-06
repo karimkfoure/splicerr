@@ -32,6 +32,8 @@ https://github.com/user-attachments/assets/34f1ba90-c881-4a04-a5df-c147bdb51c2c
 ## Features
 
 - Drag-and-drop samples
+- **Local library mirror** (preview saves MP3 + metadata; offline browse via **My library**) ✨ _new in this fork_
+- **Favorites** stored locally with filter in library mode ✨ _new in this fork_
 - **Transpose by key or pitch (tempo-preserving)** ✨ _new in this fork_
 - Search suggestions
 - Tag filtering

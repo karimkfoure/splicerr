@@ -9,6 +9,7 @@ import {
     stat,
 } from "@tauri-apps/plugin-fs"
 import { resetMode, setMode } from "mode-watcher"
+import { syncLibraryConnection } from "$lib/library/lifecycle"
 
 const CONFIG_FILE_NAME = "config.json"
 
@@ -62,6 +63,7 @@ export async function validateSamplesDir() {
     }
 
     samplesDirValid = await validate()
+    await syncLibraryConnection()
 
     console.log(
         samplesDirValid

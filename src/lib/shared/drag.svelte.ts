@@ -1,8 +1,11 @@
 import { startDrag } from "@crabnebula/tauri-plugin-drag"
 import { join, appCacheDir } from "@tauri-apps/api/path"
 import { exists, create, mkdir, readFile } from "@tauri-apps/plugin-fs"
-import { saveSample, savePackImage, absolutePackImagePath } from "./files.svelte"
+import { savePackImage } from "./files.svelte"
+import { materializeSampleInLibrary } from "$lib/library/materialize"
+import { setCachedInLibrary } from "$lib/library/session-cache.svelte"
 import { loading } from "./loading.svelte"
+import { isSamplesDirValid, settingsDialog } from "$lib/shared/config.svelte"
 import type { SampleAsset, PackAsset } from "$lib/splice/types"
 
 async function createDragIcon(
@@ -93,13 +96,35 @@ async function resizeImageToCorner(
     })
 }
 
+export async function handleSampleDownload(sampleAsset: SampleAsset) {
+    if (!isSamplesDirValid()) {
+        settingsDialog.open = true
+        return
+    }
+
+    console.log("⬇️ Downloading", sampleAsset.name)
+
+    try {
+        loading.setCursor(true)
+        await materializeSampleInLibrary(sampleAsset)
+        await savePackImage(sampleAsset)
+        setCachedInLibrary(sampleAsset.uuid, true)
+    } catch (e) {
+        console.error("⚠️ Error downloading", e)
+    } finally {
+        loading.setCursor(false)
+    }
+}
+
 export async function handleSampleDrag(event: DragEvent, sampleAsset: SampleAsset) {
     event.preventDefault()
     console.log("🫳 Dragging", sampleAsset.name)
 
     try {
         loading.setCursor(true)
-        const path = await saveSample(sampleAsset)
+        const { absolutePath: path } =
+            await materializeSampleInLibrary(sampleAsset)
+        setCachedInLibrary(sampleAsset.uuid, true)
 
         // Save pack image to samples directory and use it as drag icon
         const pack = sampleAsset.parents.items[0] as PackAsset
