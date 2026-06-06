@@ -8,6 +8,8 @@
     import Smile from "lucide-svelte/icons/smile"
     import Ghost from "lucide-svelte/icons/ghost"
     import Shuffle from "lucide-svelte/icons/shuffle"
+    import Download from "lucide-svelte/icons/download"
+    import LoaderCircle from "lucide-svelte/icons/loader-circle"
     import Button from "$lib/components/ui/button/button.svelte"
     import ProgressLoading from "$lib/components/progress-loading.svelte"
     import Separator from "$lib/components/ui/separator/separator.svelte"
@@ -34,8 +36,13 @@
     } from "$lib/shared/store.svelte"
     import { isSamplesDirValid } from "$lib/shared/config.svelte"
     import SettingsDialog from "$lib/components/settings-dialog.svelte"
+    import * as Dialog from "$lib/components/ui/dialog"
     import KeySelect from "$lib/components/key-select.svelte"
     import PackSelect from "$lib/components/pack-select.svelte"
+    import {
+        bulkDownloadState,
+        downloadAllSpliceResults,
+    } from "$lib/shared/bulk-download.svelte"
 
     // TODO: Taxonomy comboboxes (maybe just pass all tags to each)
     // const instrumentTags = $derived(() =>
@@ -75,6 +82,7 @@
     }
 
     let expandTags = $state(false)
+    let bulkDownloadConfirmOpen = $state(false)
 
     let viewportRef = $state<HTMLElement>(null!)
     let tagsContainerRef = $state<HTMLElement>(null!)
@@ -346,7 +354,33 @@
             {#if browseStore.mode === "splice"}
                 <Button
                     variant="outline"
+                    class="h-9 shrink-0 gap-1.5 px-2.5"
+                    disabled={bulkDownloadState.running ||
+                        dataStore.total_records === 0}
+                    onclick={() => {
+                        bulkDownloadConfirmOpen = true
+                    }}
+                >
+                    {#if bulkDownloadState.running}
+                        <LoaderCircle class="size-4 animate-spin" />
+                        {#if bulkDownloadState.phase === "listing"}
+                            <span class="text-xs tabular-nums"
+                                >{bulkDownloadState.listed.toLocaleString()}</span
+                            >
+                        {:else}
+                            <span class="text-xs tabular-nums"
+                                >{bulkDownloadState.completed.toLocaleString()}/{bulkDownloadState.total.toLocaleString()}</span
+                            >
+                        {/if}
+                    {:else}
+                        <Download class="size-4" />
+                        <span class="text-xs">Download all</span>
+                    {/if}
+                </Button>
+                <Button
+                    variant="outline"
                     size="icon"
+                    disabled={bulkDownloadState.running}
                     onclick={() => {
                         queryStore.random_seed = randomSeed()
                         queryStore.sort = "random"
@@ -514,4 +548,31 @@
         </div>
     </ScrollArea>
     <AudioPlayer onprev={gotoPrev} onnext={gotoNext} />
+
+    <Dialog.Root bind:open={bulkDownloadConfirmOpen}>
+        <Dialog.Content>
+            <Dialog.Header>
+                <Dialog.Title>Download all results?</Dialog.Title>
+                <Dialog.Description>
+                    Up to {dataStore.total_records.toLocaleString()} samples from
+                    this search will be downloaded. Items already in your library
+                    are skipped. This may take a while.
+                </Dialog.Description>
+            </Dialog.Header>
+            <Dialog.Footer>
+                <Button
+                    variant="outline"
+                    onclick={() => {
+                        bulkDownloadConfirmOpen = false
+                    }}>Cancel</Button
+                >
+                <Button
+                    onclick={() => {
+                        bulkDownloadConfirmOpen = false
+                        void downloadAllSpliceResults()
+                    }}>Download</Button
+                >
+            </Dialog.Footer>
+        </Dialog.Content>
+    </Dialog.Root>
 </main>

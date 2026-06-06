@@ -428,6 +428,28 @@ function fetchSpliceAssets() {
         })
 }
 
+export function getSpliceQueryIdentity() {
+    return spliceQueryIdentity()
+}
+
+/** One Splice search page for the current filters (used by bulk download). */
+export async function fetchSpliceSearchPage(page: number) {
+    ensureSpliceCompatibleSort()
+    const response = await querySplice(SamplesSearch, {
+        ...queryIdentity,
+        parent_asset_uuid: queryStore.pack_uuid,
+        page,
+        limit: PER_PAGE,
+    })
+    const searchResult = (response as SamplesSearchResponse | null)?.data
+        ?.assetsSearch
+    if (!searchResult) return null
+    return {
+        items: searchResult.items,
+        totalRecords: searchResult.response_metadata.records,
+    }
+}
+
 export class SamplesDirRequiredError extends Error {
     constructor() {
         super("Samples directory required")
