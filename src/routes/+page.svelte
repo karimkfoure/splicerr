@@ -164,15 +164,22 @@
         window.addEventListener("offline", onOffline)
 
         viewportRef.addEventListener("scroll", () => {
-            if (
-                !loading.assets &&
+            if (loading.assets) return
+            const atBottom =
                 viewportRef.scrollTop + viewportRef.clientHeight >=
-                    viewportRef.scrollHeight - viewportRef.clientHeight
+                viewportRef.scrollHeight - viewportRef.clientHeight
+            if (!atBottom) return
+
+            if (
+                browseStore.mode === "library" &&
+                dataStore.sampleAssets.length >= dataStore.total_records
             ) {
-                queryStore.page += 1
-                console.log("📃 End of list reached, loading more assets")
-                fetchAssets()
+                return
             }
+
+            queryStore.page += 1
+            console.log("📃 End of list reached, loading more assets")
+            fetchAssets()
         })
 
         searchInputRef.focus()

@@ -38,6 +38,8 @@ import { config, isSamplesDirValid, settingsDialog } from "./config.svelte"
 
 export const DEFAULT_SORT = "relevance"
 export const PER_PAGE = 50
+/** Local SQLite search — one round-trip can safely return more than Splice API pages. */
+export const LIBRARY_PER_PAGE = 2500
 
 export const LIBRARY_SORTS = [
     "name",
@@ -197,7 +199,8 @@ function fetchLibraryAssets() {
     }
 
     const identityBeforeFetch = libraryQueryIdentity()
-    const isAppend = identityBeforeFetch === currentQueryIdentity
+    const isAppend =
+        identityBeforeFetch === currentQueryIdentity && queryStore.page > 1
     if (!isAppend) {
         storeCallbacks.onbeforedataupdate?.()
         queryStore.page = 1
@@ -210,7 +213,7 @@ function fetchLibraryAssets() {
         query: queryStore.query,
         tags: [...dataStore.tags],
         page: queryStore.page,
-        limit: PER_PAGE,
+        limit: LIBRARY_PER_PAGE,
         sort: librarySortField(),
         order: queryStore.order,
         favoritesOnly: browseStore.libraryFavoritesOnly,
