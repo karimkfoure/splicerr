@@ -32,6 +32,7 @@ import { mp3BlobUrl } from "$lib/shared/sample-bytes"
 import {
     readSampleMp3Bytes,
     ensureSampleMp3OnDisk,
+    syncSampleLibraryFromDisk,
 } from "$lib/shared/files.svelte"
 import { config, isSamplesDirValid, settingsDialog } from "./config.svelte"
 
@@ -317,45 +318,199 @@ export class SamplesDirRequiredError extends Error {
     }
 }
 
-export async function getDescrambledSampleURL(sampleAsset: SampleAsset) {
-    const existingBlobURL = dataStore.descrambledSamples.get(sampleAsset.uuid)
-    if (existingBlobURL) {
-        console.info("✔️ Reusing descrambled sample blob")
-        return existingBlobURL
+const descrambledPlaybackInflight = new Map<string, Promise<string>>()
+const diskPrefetchInflight = new Map<string, Promise<void>>()
+
+/** Max in-memory descrambled MP3 blobs (~full file size each). */
+const MAX_DESCRAMBLED_BLOBS = 50
+const descrambledBlobLru: string[] = []
+
+function removeDescrambledLru(uuid: string) {
+    const i = descrambledBlobLru.indexOf(uuid)
+    if (i >= 0) descrambledBlobLru.splice(i, 1)
+}
+
+function touchDescrambledLru(uuid: string) {
+    removeDescrambledLru(uuid)
+    descrambledBlobLru.push(uuid)
+}
+
+function playbackProtectedUuids(anchorUuid: string): Set<string> {
+    const protectedUuids = new Set<string>([anchorUuid])
+    const idx = dataStore.sampleAssets.findIndex((a) => a.uuid === anchorUuid)
+    if (idx < 0) return protectedUuids
+    if (idx > 0) protectedUuids.add(dataStore.sampleAssets[idx - 1].uuid)
+    if (idx + 1 < dataStore.sampleAssets.length) {
+        protectedUuids.add(dataStore.sampleAssets[idx + 1].uuid)
+    }
+    return protectedUuids
+}
+
+function trimDescrambledBlobCache(anchorUuid: string) {
+    const protectedUuids = playbackProtectedUuids(anchorUuid)
+    while (descrambledBlobLru.length > MAX_DESCRAMBLED_BLOBS) {
+        const victim = descrambledBlobLru.find((u) => !protectedUuids.has(u))
+        if (!victim) break
+        freeDescrambledSample(victim)
+    }
+}
+
+function registerDescrambledBlob(
+    uuid: string,
+    blobURL: string,
+    anchorUuid: string
+) {
+    const existing = dataStore.descrambledSamples.get(uuid)
+    if (
+        existing &&
+        existing !== blobURL &&
+        existing.startsWith("blob:")
+    ) {
+        window.URL.revokeObjectURL(existing)
+    }
+    dataStore.descrambledSamples.set(uuid, blobURL)
+    touchDescrambledLru(uuid)
+    trimDescrambledBlobCache(anchorUuid)
+}
+
+export function getCachedDescrambledPlaybackUrl(
+    uuid: string
+): string | undefined {
+    const url = dataStore.descrambledSamples.get(uuid)
+    if (url) touchDescrambledLru(uuid)
+    return url
+}
+
+/** Warm blob URL while the row is selected (mousedown), before play click. */
+export function prefetchPlaybackUrl(sampleAsset: SampleAsset) {
+    if (!isSamplesDirValid()) return
+    if (semitonesFor(sampleAsset)) return
+    void ensureDescrambledPlaybackUrl(sampleAsset)
+    prefetchNeighborPlaybackUrls(sampleAsset)
+}
+
+function prefetchDescrambledFromDiskOnly(
+    sampleAsset: SampleAsset,
+    anchorUuid: string
+) {
+    if (!isSamplesDirValid()) return
+    if (semitonesFor(sampleAsset)) return
+    if (dataStore.descrambledSamples.has(sampleAsset.uuid)) return
+    if (descrambledPlaybackInflight.has(sampleAsset.uuid)) return
+
+    let inflight = diskPrefetchInflight.get(sampleAsset.uuid)
+    if (inflight) return
+
+    inflight = (async () => {
+        const bytes = await readSampleMp3Bytes(sampleAsset)
+        if (!bytes) return
+        registerDescrambledBlob(
+            sampleAsset.uuid,
+            mp3BlobUrl(bytes),
+            anchorUuid
+        )
+    })().finally(() => {
+        diskPrefetchInflight.delete(sampleAsset.uuid)
+    })
+    diskPrefetchInflight.set(sampleAsset.uuid, inflight)
+    void inflight
+}
+
+/** Prefetch list neighbors (±1) from disk only — no network, idle-scheduled. */
+export function prefetchNeighborPlaybackUrls(center: SampleAsset) {
+    if (!isSamplesDirValid()) return
+    if (semitonesFor(center)) return
+
+    const run = () => {
+        const idx = dataStore.sampleAssets.findIndex(
+            (a) => a.uuid === center.uuid
+        )
+        if (idx < 0) return
+        for (const i of [idx - 1, idx + 1]) {
+            if (i < 0 || i >= dataStore.sampleAssets.length) continue
+            prefetchDescrambledFromDiskOnly(
+                dataStore.sampleAssets[i],
+                center.uuid
+            )
+        }
     }
 
-    if (!isSamplesDirValid()) {
-        throw new SamplesDirRequiredError()
+    if (typeof requestIdleCallback === "function") {
+        requestIdleCallback(run, { timeout: 800 })
+    } else {
+        setTimeout(run, 50)
     }
+}
 
-    loading.samples.add(sampleAsset.uuid)
-    loading.samplesCount++
-
-    try {
-        const onDisk = await readSampleMp3Bytes(sampleAsset)
-        let blobURL: string
-
-        if (onDisk) {
-            blobURL = mp3BlobUrl(onDisk)
-            const result = await ensureSampleMp3OnDisk(sampleAsset)
-            await upsertSampleMetadataAfterCache(sampleAsset, result)
-        } else {
-            const result = await materializeSampleInLibrary(sampleAsset)
-            blobURL = mp3BlobUrl(result.bytes)
+function loadDescrambledPlaybackUrl(
+    sampleAsset: SampleAsset
+): Promise<string> {
+    return (async (): Promise<string> => {
+        const bytes = await readSampleMp3Bytes(sampleAsset)
+        if (bytes) {
+            const blobURL = mp3BlobUrl(bytes)
+            registerDescrambledBlob(
+                sampleAsset.uuid,
+                blobURL,
+                sampleAsset.uuid
+            )
+            scheduleDeferredLibraryTouch(sampleAsset)
+            return blobURL
         }
 
-        dataStore.descrambledSamples.set(sampleAsset.uuid, blobURL)
-        console.info("🔗 Created descrambled sample blob")
-        return blobURL
-    } finally {
-        loading.samples.delete(sampleAsset.uuid)
-        loading.samplesCount--
+        if (!isSamplesDirValid()) {
+            throw new SamplesDirRequiredError()
+        }
+
+        loading.samples.add(sampleAsset.uuid)
+        loading.samplesCount++
+
+        try {
+            const result = await materializeSampleInLibrary(sampleAsset)
+            const blobURL = mp3BlobUrl(result.bytes)
+            registerDescrambledBlob(
+                sampleAsset.uuid,
+                blobURL,
+                sampleAsset.uuid
+            )
+            return blobURL
+        } finally {
+            loading.samples.delete(sampleAsset.uuid)
+            loading.samplesCount--
+        }
+    })()
+}
+
+async function ensureDescrambledPlaybackUrl(
+    sampleAsset: SampleAsset
+): Promise<string> {
+    const cached = dataStore.descrambledSamples.get(sampleAsset.uuid)
+    if (cached) {
+        touchDescrambledLru(sampleAsset.uuid)
+        return cached
     }
+
+    let inflight = descrambledPlaybackInflight.get(sampleAsset.uuid)
+    if (!inflight) {
+        inflight = loadDescrambledPlaybackUrl(sampleAsset)
+        descrambledPlaybackInflight.set(sampleAsset.uuid, inflight)
+        void inflight.finally(() => {
+            descrambledPlaybackInflight.delete(sampleAsset.uuid)
+        })
+    }
+    return inflight
+}
+
+export async function getDescrambledSampleURL(sampleAsset: SampleAsset) {
+    return ensureDescrambledPlaybackUrl(sampleAsset)
 }
 
 async function upsertSampleMetadataAfterCache(
     sampleAsset: SampleAsset,
-    result: Awaited<ReturnType<typeof ensureSampleMp3OnDisk>>
+    result: {
+        relativePath: string
+        waveformRelativePath: string | null
+    }
 ) {
     const { libraryUpsertFromAsset } = await import("$lib/library/api")
     await libraryUpsertFromAsset({
@@ -364,6 +519,31 @@ async function upsertSampleMetadataAfterCache(
         waveformRelativePath: result.waveformRelativePath,
         audioCachedAt: Date.now(),
     })
+}
+
+function deferLibraryTouchAfterPlayback(sampleAsset: SampleAsset) {
+    void (async () => {
+        try {
+            const synced = await syncSampleLibraryFromDisk(sampleAsset)
+            if (synced) {
+                await upsertSampleMetadataAfterCache(sampleAsset, synced)
+                return
+            }
+            const result = await ensureSampleMp3OnDisk(sampleAsset)
+            await upsertSampleMetadataAfterCache(sampleAsset, result)
+        } catch (e) {
+            console.warn("⚠️ Background library sync failed", e)
+        }
+    })()
+}
+
+function scheduleDeferredLibraryTouch(sampleAsset: SampleAsset) {
+    const run = () => deferLibraryTouchAfterPlayback(sampleAsset)
+    if (typeof requestIdleCallback === "function") {
+        requestIdleCallback(run, { timeout: 3000 })
+    } else {
+        setTimeout(run, 0)
+    }
 }
 
 export function freeDescrambledSample(uuid: string) {
@@ -378,7 +558,12 @@ export function freeDescrambledSample(uuid: string) {
     if (!existingBlobURL) return false
 
     dataStore.descrambledSamples.delete(uuid)
-    window.URL.revokeObjectURL(existingBlobURL)
+    removeDescrambledLru(uuid)
+    descrambledPlaybackInflight.delete(uuid)
+    diskPrefetchInflight.delete(uuid)
+    if (existingBlobURL.startsWith("blob:")) {
+        window.URL.revokeObjectURL(existingBlobURL)
+    }
     console.info("⛓️‍💥 Freed descrambled sample")
 
     return true
@@ -417,7 +602,7 @@ export async function getTransposedSampleURL(
 
 export async function getPlaybackSampleURL(sampleAsset: SampleAsset) {
     const semitones = semitonesFor(sampleAsset)
-    if (!semitones) return await getDescrambledSampleURL(sampleAsset)
+    if (!semitones) return ensureDescrambledPlaybackUrl(sampleAsset)
     return await getTransposedSampleURL(sampleAsset, semitones)
 }
 

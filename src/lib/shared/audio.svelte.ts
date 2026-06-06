@@ -1,13 +1,16 @@
 import type { PackAsset, SampleAsset } from "$lib/splice/types"
-import { loading } from "$lib/shared/loading.svelte"
 import { config } from "$lib/shared/config.svelte"
 import {
     dataStore,
     freeDescrambledSample,
+    getCachedDescrambledPlaybackUrl,
     getPlaybackSampleURL,
+    prefetchNeighborPlaybackUrls,
+    prefetchPlaybackUrl,
     SamplesDirRequiredError,
 } from "$lib/shared/store.svelte"
 import { isSamplesDirValid, settingsDialog } from "$lib/shared/config.svelte"
+import { semitonesFor } from "$lib/shared/transpose.svelte"
 
 let prevVolume = 0.8
 
@@ -49,21 +52,35 @@ export const globalAudio = $state({
             }
 
             this.currentAsset = sampleAsset
-            // this.ref.src = await getDescrambledSampleURL(sampleAsset)
+            prefetchPlaybackUrl(sampleAsset)
         }
-        // if (play) {
-        //     this.playSampleAsset(sampleAsset)
-        // }
-        // TODO: this is kinda borked
     },
-    async playSampleAsset(sampleAsset: SampleAsset, from: number = 0) {
-        if (loading.samples.has(sampleAsset.uuid)) {
-            console.info("🐢 Already loading sample")
+    applyPlaybackSrc(sampleAsset: SampleAsset, src: string, from: number = 0) {
+        const delay = config.cut_mp3_delay ? 0.012 : 0
+        const start = from > 0 ? from : delay
+        const assetUuid = sampleAsset.uuid
+
+        this.currentTime = start
+        this.ref.pause()
+        this.ref.loop =
+            sampleAsset.asset_category_slug == "loop" && config.repeat_audio
+
+        const begin = () => {
+            if (this.currentAsset?.uuid !== assetUuid) return
+            this.ref.currentTime = start
+            this.currentTime = start
+            void this.ref.play()
+        }
+
+        if (this.ref.src === src && this.ref.readyState >= 1) {
+            begin()
             return
         }
-        this.ref.src = ""
-        this.currentTime = 0
 
+        this.ref.addEventListener("loadedmetadata", () => begin(), { once: true })
+        this.ref.src = src
+    },
+    async playSampleAsset(sampleAsset: SampleAsset, from: number = 0) {
         if (this.currentAsset) {
             if (
                 !dataStore.sampleAssets.some(
@@ -75,25 +92,36 @@ export const globalAudio = $state({
         }
 
         this.currentAsset = sampleAsset
+        if (from <= 0) {
+            this.currentTime = 0
+        }
         if (!isSamplesDirValid()) {
             settingsDialog.open = true
             return
         }
+
+        if (!semitonesFor(sampleAsset)) {
+            const cached = getCachedDescrambledPlaybackUrl(sampleAsset.uuid)
+            if (cached) {
+                this.applyPlaybackSrc(sampleAsset, cached, from)
+                prefetchNeighborPlaybackUrls(sampleAsset)
+                return
+            }
+        }
+
         try {
-            this.ref.src = await getPlaybackSampleURL(sampleAsset)
+            const src = await getPlaybackSampleURL(sampleAsset)
+            if (this.currentAsset.uuid != sampleAsset.uuid) {
+                return
+            }
+            this.applyPlaybackSrc(sampleAsset, src, from)
+            prefetchNeighborPlaybackUrls(sampleAsset)
         } catch (e) {
             if (e instanceof SamplesDirRequiredError) {
                 settingsDialog.open = true
             }
             throw e
         }
-        if (this.currentAsset.uuid != sampleAsset.uuid) {
-            return
-        }
-        const delay = config.cut_mp3_delay ? 0.012 : 0
-        this.ref.currentTime = from > 0 ? from : delay
-        this.ref.loop = sampleAsset.asset_category_slug == "loop" && config.repeat_audio
-        this.ref.play()
     },
     // Reload the currently playing sample (e.g. after transpose settings change),
     // preserving playback position and play/pause state.

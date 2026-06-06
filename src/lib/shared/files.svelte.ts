@@ -46,9 +46,35 @@ export async function readSampleMp3Bytes(
     sampleAsset: SampleAsset
 ): Promise<Uint8Array | null> {
     if (!isSamplesDirValid()) return null
-    const absolutePath = await absoluteSamplePath(sampleAsset)
+    try {
+        const absolutePath = await absoluteSamplePath(sampleAsset)
+        return await readFile(absolutePath)
+    } catch {
+        return null
+    }
+}
+
+/** Waveform/cover/DB touch after play — does not read audio bytes when the file exists. */
+export async function syncSampleLibraryFromDisk(
+    sampleAsset: SampleAsset
+): Promise<{
+    absolutePath: string
+    relativePath: string
+    waveformRelativePath: string | null
+} | null> {
+    if (!config.samples_dir || !isSamplesDirValid()) return null
+
+    const relativePath = sampleRelativePath(sampleAsset)
+    const absolutePath = await join(config.samples_dir, relativePath)
     if (!(await exists(absolutePath))) return null
-    return await readFile(absolutePath)
+
+    const waveformRelativePath = await ensureWaveformSidecar(
+        sampleAsset,
+        relativePath
+    )
+    await cachePackCover(sampleAsset)
+
+    return { absolutePath, relativePath, waveformRelativePath }
 }
 
 export async function ensureWaveformSidecar(

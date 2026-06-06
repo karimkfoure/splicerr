@@ -47,6 +47,7 @@
 
 <div class={cn("flex flex-col w-full", className)} {...restProps}>
     <audio
+        preload="auto"
         bind:this={globalAudio.ref}
         bind:paused={globalAudio.paused}
         bind:currentTime={globalAudio.currentTime}
@@ -56,7 +57,10 @@
             globalAudio.loading = true
             // TODO: Move into list component
         }}
-        oncanplaythrough={() => {
+        oncanplay={() => {
+            globalAudio.loading = false
+        }}
+        onerror={() => {
             globalAudio.loading = false
         }}
     ></audio>
