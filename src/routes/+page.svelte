@@ -35,6 +35,7 @@
     import { isSamplesDirValid } from "$lib/shared/config.svelte"
     import SettingsDialog from "$lib/components/settings-dialog.svelte"
     import KeySelect from "$lib/components/key-select.svelte"
+    import PackSelect from "$lib/components/pack-select.svelte"
 
     // TODO: Taxonomy comboboxes (maybe just pass all tags to each)
     // const instrumentTags = $derived(() =>
@@ -234,6 +235,16 @@
                 onsubmit={fetchAssets}
                 class="flex-grow"
                 bind:inputRef={searchInputRef}
+            />
+            <PackSelect
+                mode={browseStore.mode}
+                bind:pack_uuid={queryStore.pack_uuid}
+                bind:pack_label={queryStore.pack_label}
+                bind:pack_folder_name={queryStore.pack_folder_name}
+                onselect={() => {
+                    resetAssetList()
+                    fetchAssets()
+                }}
             />
             <KeySelect
                 bind:key={queryStore.key}

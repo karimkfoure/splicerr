@@ -186,7 +186,23 @@ pub struct LibrarySearchParams {
     pub min_bpm: Option<i32>,
     pub max_bpm: Option<i32>,
     pub bpm: Option<String>,
+    pub pack_uuid: Option<String>,
     pub samples_dir: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryListPacksParams {
+    pub query: Option<String>,
+    pub samples_dir: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PackListEntry {
+    pub uuid: String,
+    pub name: String,
+    pub cover_relative_path: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -219,6 +235,14 @@ pub fn library_tag_summary(
     params: LibrarySearchParams,
 ) -> Result<Vec<TagSummaryEntry>, String> {
     with_conn(&state, |conn| search::tag_summary(conn, params))
+}
+
+#[tauri::command]
+pub fn library_list_packs(
+    state: State<LibraryState>,
+    params: LibraryListPacksParams,
+) -> Result<Vec<PackListEntry>, String> {
+    with_conn(&state, |conn| search::list_packs(conn, &params))
 }
 
 fn pack_cover_source_url_from_json(pack: &serde_json::Value) -> Option<String> {
@@ -559,8 +583,41 @@ mod search {
                 sql_params.push(fts_q.into());
             }
         }
+        if let Some(ref pack_uuid) = params.pack_uuid {
+            clauses.push("s.pack_uuid = ?".to_string());
+            sql_params.push(pack_uuid.clone().into());
+        }
 
         Ok((clauses.join(" AND "), sql_params))
+    }
+
+    pub fn list_packs(
+        conn: &Connection,
+        params: &LibraryListPacksParams,
+    ) -> Result<Vec<PackListEntry>, String> {
+        let mut clauses = vec![
+            "EXISTS (SELECT 1 FROM samples s WHERE s.pack_uuid = p.uuid AND s.audio_cached_at > 0)"
+                .to_string(),
+        ];
+        let mut sql_params: Vec<Value> = vec![];
+        if let Some(ref q) = params.query {
+            let trimmed = q.trim();
+            if !trimmed.is_empty() {
+                clauses.push("LOWER(p.name) LIKE LOWER(?)".to_string());
+                sql_params.push(format!("%{}%", trimmed).into());
+            }
+        }
+        let sql = format!(
+            "SELECT p.uuid, p.name, p.cover_relative_path FROM packs p WHERE {} ORDER BY p.name COLLATE NOCASE LIMIT 80",
+            clauses.join(" AND ")
+        );
+        query_rows(conn, &sql, &sql_params, |r| {
+            Ok(PackListEntry {
+                uuid: r.get(0)?,
+                name: r.get(1)?,
+                cover_relative_path: r.get(2)?,
+            })
+        })
     }
 
     fn row_to_asset(
@@ -768,6 +825,7 @@ mod tests {
                 min_bpm: None,
                 max_bpm: None,
                 bpm: None,
+                pack_uuid: None,
                 samples_dir: dir.path().to_str().unwrap().into(),
             },
         )
@@ -790,6 +848,7 @@ mod tests {
                 min_bpm: None,
                 max_bpm: None,
                 bpm: None,
+                pack_uuid: None,
                 samples_dir: dir.path().to_str().unwrap().into(),
             },
         )

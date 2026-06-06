@@ -74,7 +74,23 @@ export type LibrarySearchParams = {
     minBpm?: number | null
     maxBpm?: number | null
     bpm?: string | null
+    packUuid?: string | null
     samplesDir: string
+}
+
+export type LibraryPackListEntry = {
+    uuid: string
+    name: string
+    coverRelativePath: string | null
+}
+
+export async function libraryListPacks(samplesDir: string, query?: string) {
+    return invoke<LibraryPackListEntry[]>("library_list_packs", {
+        params: {
+            samplesDir,
+            query: query?.trim() || null,
+        },
+    })
 }
 
 export type LibrarySearchResponse = {
@@ -103,6 +119,7 @@ export async function librarySearch(params: LibrarySearchParams) {
             minBpm: params.minBpm ?? null,
             maxBpm: params.maxBpm ?? null,
             bpm: params.bpm ?? null,
+            packUuid: params.packUuid ?? null,
             samplesDir: params.samplesDir,
         },
     })
@@ -129,6 +146,7 @@ export async function libraryTagSummary(params: LibrarySearchParams) {
             minBpm: params.minBpm ?? null,
             maxBpm: params.maxBpm ?? null,
             bpm: params.bpm ?? null,
+            packUuid: params.packUuid ?? null,
             samplesDir: params.samplesDir,
         },
     })

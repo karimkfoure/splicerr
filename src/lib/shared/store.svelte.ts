@@ -109,6 +109,9 @@ function snapshotBrowseListCache(mode: BrowseMode) {
 export function resetSortForBrowseMode(mode: BrowseMode) {
     queryStore.order = "DESC"
     queryStore.sort = mode === "library" ? "ingested_at" : DEFAULT_SORT
+    queryStore.pack_uuid = null
+    queryStore.pack_label = null
+    queryStore.pack_folder_name = null
 }
 
 /** Switch Splice ↔ My library without flashing an empty list when filters match. */
@@ -165,6 +168,10 @@ export const queryStore = $state({
     max_bpm: null as number | null,
     key: null as Key | null,
     chord_type: null as ChordType | null,
+    pack_uuid: null as string | null,
+    pack_label: null as string | null,
+    /** Full pack folder name (library disk paths / cover lookup). */
+    pack_folder_name: null as string | null,
 })
 
 const queryIdentity = $derived({
@@ -179,6 +186,7 @@ const queryIdentity = $derived({
     max_bpm: queryStore.max_bpm,
     key: queryStore.key,
     chord_type: queryStore.chord_type,
+    pack_uuid: queryStore.pack_uuid,
 })
 
 export const storeCallbacks = $state({
@@ -305,6 +313,7 @@ function fetchLibraryAssets() {
         minBpm: queryStore.min_bpm,
         maxBpm: queryStore.max_bpm,
         bpm: queryStore.bpm,
+        packUuid: queryStore.pack_uuid,
         samplesDir: config.samples_dir,
     })
         .then((result) => {
@@ -358,6 +367,7 @@ function fetchSpliceAssets() {
     loading.fetchError = null
     querySplice(SamplesSearch, {
         ...queryIdentity,
+        parent_asset_uuid: queryStore.pack_uuid,
         page: queryStore.page,
         limit: PER_PAGE,
     })
