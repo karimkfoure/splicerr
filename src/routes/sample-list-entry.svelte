@@ -10,7 +10,11 @@
     import Button from "$lib/components/ui/button/button.svelte"
     import * as Tooltip from "$lib/components/ui/tooltip/index.js"
     import LoaderCircle from "lucide-svelte/icons/loader-circle"
-    import { dataStore, fetchAssets } from "$lib/shared/store.svelte"
+    import {
+        browseStore,
+        dataStore,
+        fetchAssets,
+    } from "$lib/shared/store.svelte"
     import { cn, formatKey } from "$lib/utils"
     import { loading } from "$lib/shared/loading.svelte"
     import { assetIcons } from "$lib/shared/icons.svelte"
@@ -52,8 +56,9 @@
     let favoriting = $state(false)
 
     const inLibrary = $derived(
-        inLibraryState.version >= 0 &&
-            getCachedInLibrary(sampleAsset.uuid)
+        browseStore.mode === "library" ||
+        (inLibraryState.version >= 0 &&
+            getCachedInLibrary(sampleAsset.uuid))
     )
     const isFavorite = $derived(
         inLibraryState.version >= 0 &&
