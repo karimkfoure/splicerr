@@ -4,6 +4,7 @@ import type {
     AssetSortType,
     ChordType,
     Key,
+    PackAsset,
     SampleAsset,
     SamplesSearchResponse,
     SortOrder,
@@ -210,6 +211,19 @@ export function resetAssetList() {
     queryStore.page = 1
     dataStore.sampleAssets = []
     loading.fetchError = null
+}
+
+export function packDisplayName(fullName: string) {
+    return fullName.split("/").slice(-1)[0] || fullName
+}
+
+/** Set pack filter from a row’s parent pack and reload results. */
+export function applyPackFilter(pack: PackAsset) {
+    queryStore.pack_uuid = pack.uuid
+    queryStore.pack_label = packDisplayName(pack.name)
+    queryStore.pack_folder_name = pack.name
+    resetAssetList()
+    fetchAssets()
 }
 
 /** Sort values only valid for Splice GraphQL (not local library). */

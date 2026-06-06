@@ -11,6 +11,7 @@
     import * as Tooltip from "$lib/components/ui/tooltip/index.js"
     import LoaderCircle from "lucide-svelte/icons/loader-circle"
     import {
+        applyPackFilter,
         browseStore,
         dataStore,
         fetchAssets,
@@ -86,6 +87,18 @@
         var seconds = Math.floor((millis % 60000) / 1000)
         return minutes + ":" + (seconds < 10 ? "0" : "") + seconds
     }
+
+    function onPackNamePointerDown(event: PointerEvent) {
+        if (!pack?.uuid) return
+        event.stopPropagation()
+    }
+
+    function onPackNameClick(event: MouseEvent) {
+        if (!pack?.uuid) return
+        event.stopPropagation()
+        event.preventDefault()
+        applyPackFilter(pack)
+    }
 </script>
 
 <button
@@ -108,15 +121,29 @@
             <Tooltip.Provider>
                 <Tooltip.Root>
                     <Tooltip.Trigger
-                        class="block w-full min-w-0 text-left cursor-grab"
+                        class={cn(
+                            "block w-full min-w-0 text-left",
+                            pack?.uuid
+                                ? "cursor-pointer hover:underline"
+                                : "cursor-grab"
+                        )}
+                        onpointerdown={onPackNamePointerDown}
+                        onclick={onPackNameClick}
                     >
                         <span
-                            class="pack-row-name text-xs text-muted-foreground"
+                            class={cn(
+                                "pack-row-name text-xs text-muted-foreground",
+                                pack?.uuid && "hover:text-foreground"
+                            )}
                         >
                             {packName || "—"}
                         </span>
                     </Tooltip.Trigger>
-                    <Tooltip.Content>{packName || "—"}</Tooltip.Content>
+                    <Tooltip.Content>
+                        {pack?.uuid
+                            ? `Filter by pack: ${packName}`
+                            : packName || "—"}
+                    </Tooltip.Content>
                 </Tooltip.Root>
             </Tooltip.Provider>
         </div>
