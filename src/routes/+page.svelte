@@ -30,8 +30,7 @@
         randomSeed,
         browseStore,
         resetAssetList,
-        ensureSpliceCompatibleSort,
-        ensureLibraryCompatibleSort,
+        switchBrowseMode,
     } from "$lib/shared/store.svelte"
     import { isSamplesDirValid } from "$lib/shared/config.svelte"
     import SettingsDialog from "$lib/components/settings-dialog.svelte"
@@ -62,6 +61,14 @@
         viewportRef.scrollTo({ top: 0, behavior: "smooth" })
     }
 
+    storeCallbacks.onBrowseModeListReset = () => {
+        if (viewportRef) viewportRef.scrollTop = 0
+        const first = dataStore.sampleAssets[0]
+        if (first) {
+            globalAudio.selectSampleAsset(first, false)
+        }
+    }
+
     storeCallbacks.onbeforetagsupdate = () => {
         tagsDrawerRef.style.height = `${tagsContainerRef.offsetHeight}px`
     }
@@ -77,14 +84,7 @@
     )
 
     const setBrowseMode = (mode: "splice" | "library") => {
-        browseStore.mode = mode
-        if (mode === "library") {
-            ensureLibraryCompatibleSort()
-        } else {
-            ensureSpliceCompatibleSort()
-        }
-        resetAssetList()
-        fetchAssets()
+        switchBrowseMode(mode)
     }
 
     const selectedSampleIndex = $derived(

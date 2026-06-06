@@ -66,6 +66,75 @@ export const browseStore = $state({
     libraryFavoritesOnly: false,
 })
 
+type BrowseListCache = {
+    identity: string
+    sampleAssets: SampleAsset[]
+    total_records: number
+    tag_summary: TagSummaryEntry[]
+    page: number
+}
+
+const browseListCaches: Record<BrowseMode, BrowseListCache | null> = {
+    splice: null,
+    library: null,
+}
+
+function browseQueryIdentity(mode: BrowseMode) {
+    if (mode === "library") {
+        return JSON.stringify({
+            ...queryIdentity,
+            mode: "library",
+            favorites: browseStore.libraryFavoritesOnly,
+        })
+    }
+    return JSON.stringify({ ...queryIdentity, mode: "splice" })
+}
+
+function spliceQueryIdentity() {
+    return browseQueryIdentity("splice")
+}
+
+function snapshotBrowseListCache(mode: BrowseMode) {
+    if (dataStore.sampleAssets.length === 0) return
+    browseListCaches[mode] = {
+        identity: browseQueryIdentity(mode),
+        sampleAssets: dataStore.sampleAssets.slice(),
+        total_records: dataStore.total_records,
+        tag_summary: dataStore.tag_summary,
+        page: queryStore.page,
+    }
+}
+
+/** Switch Splice ↔ My library without flashing an empty list when filters match. */
+export function switchBrowseMode(mode: BrowseMode) {
+    alignListAfterBrowseModeSwitch = true
+    snapshotBrowseListCache(browseStore.mode)
+    browseStore.mode = mode
+    if (mode === "library") {
+        ensureLibraryCompatibleSort()
+    } else {
+        ensureSpliceCompatibleSort()
+    }
+
+    const identity = browseQueryIdentity(mode)
+    const cache = browseListCaches[mode]
+    if (cache?.identity === identity && cache.sampleAssets.length > 0) {
+        dataStore.sampleAssets = cache.sampleAssets
+        dataStore.total_records = cache.total_records
+        dataStore.tag_summary = cache.tag_summary
+        currentQueryIdentity = identity
+        queryStore.page = cache.page
+        loading.assets = false
+        loading.fetchError = null
+        loading.beforeFirstLoad = false
+        applyBrowseModeListReset()
+        return
+    }
+
+    resetAssetList()
+    fetchAssets()
+}
+
 export const keys = [
     "C",
     "C#",
@@ -113,9 +182,18 @@ const queryIdentity = $derived({
 export const storeCallbacks = $state({
     onbeforedataupdate: null as (() => void) | null,
     onbeforetagsupdate: null as (() => void) | null,
+    /** Scroll list to top and focus first row after Splice ↔ library tab change. */
+    onBrowseModeListReset: null as (() => void) | null,
 })
 
 let currentQueryIdentity: string = ""
+let alignListAfterBrowseModeSwitch = false
+
+function applyBrowseModeListReset() {
+    if (!alignListAfterBrowseModeSwitch) return
+    alignListAfterBrowseModeSwitch = false
+    storeCallbacks.onBrowseModeListReset?.()
+}
 
 export function resetAssetList() {
     currentQueryIdentity = ""
@@ -226,8 +304,18 @@ function fetchLibraryAssets() {
         samplesDir: config.samples_dir,
     })
         .then((result) => {
+            loading.assets = false
+            loading.beforeFirstLoad = false
+            if (browseStore.mode !== "library") {
+                alignListAfterBrowseModeSwitch = false
+                return
+            }
+
             const identityAfterFetch = libraryQueryIdentity()
-            if (identityBeforeFetch !== identityAfterFetch) return
+            if (identityBeforeFetch !== identityAfterFetch) {
+                alignListAfterBrowseModeSwitch = false
+                return
+            }
 
             const items = result.items.map(localizeSampleAsset)
             if (isAppend) {
@@ -242,9 +330,8 @@ function fetchLibraryAssets() {
             dataStore.total_records = result.totalRecords
             storeCallbacks.onbeforetagsupdate?.()
             dataStore.tag_summary = result.tagSummary
-            loading.assets = false
-            loading.beforeFirstLoad = false
             loading.fetchError = null
+            applyBrowseModeListReset()
         })
         .catch((error: Error) => {
             console.error("⚠️ Failed to fetch library assets", error)
@@ -256,8 +343,9 @@ function fetchLibraryAssets() {
 function fetchSpliceAssets() {
     ensureSpliceCompatibleSort()
 
-    const identityBeforeFetch = JSON.stringify(queryIdentity)
-    const isAppend = identityBeforeFetch === currentQueryIdentity
+    const identityBeforeFetch = spliceQueryIdentity()
+    const isAppend =
+        identityBeforeFetch === currentQueryIdentity && queryStore.page > 1
     if (!isAppend) {
         storeCallbacks.onbeforedataupdate?.()
         queryStore.page = 1
@@ -269,43 +357,55 @@ function fetchSpliceAssets() {
         page: queryStore.page,
         limit: PER_PAGE,
     })
-        .then(async (response) => {
-            const searchResult = (response as SamplesSearchResponse).data
-                .assetsSearch
-            const identityAfterFetch = JSON.stringify(queryIdentity)
-            if (identityBeforeFetch == identityAfterFetch) {
-                if (isAppend) {
-                    dataStore.sampleAssets.push(...searchResult.items)
-                    console.info("➕ Loaded more assets")
-                } else {
-                    for (const sampleAsset of dataStore.sampleAssets) {
-                        if (
-                            !searchResult.items.some(
-                                (other) => sampleAsset.uuid == other.uuid
-                            ) &&
-                            sampleAsset.uuid != globalAudio.currentAsset?.uuid
-                        ) {
-                            freeDescrambledSample(sampleAsset.uuid)
-                        }
-                    }
-                    dataStore.sampleAssets = searchResult.items
-                    currentQueryIdentity = identityAfterFetch
-                    console.info("🔄️ Loaded new assets")
-                }
-                dataStore.total_records = searchResult.response_metadata.records
+        .then((response) => {
+            loading.assets = false
+            loading.beforeFirstLoad = false
 
-                storeCallbacks.onbeforetagsupdate?.()
-                dataStore.tag_summary = searchResult.tag_summary
-
-                await syncInLibraryFlags()
-
-                loading.assets = false
-                loading.beforeFirstLoad = false
-
-                loading.fetchError = null
-            } else {
-                console.info("🕜 Ignored stale assets")
+            if (browseStore.mode !== "splice") {
+                alignListAfterBrowseModeSwitch = false
+                return
             }
+
+            const identityAfterFetch = spliceQueryIdentity()
+            if (identityBeforeFetch !== identityAfterFetch) {
+                console.info("🕜 Ignored stale assets")
+                alignListAfterBrowseModeSwitch = false
+                return
+            }
+
+            const searchResult = (response as SamplesSearchResponse | null)?.data
+                ?.assetsSearch
+            if (!searchResult) {
+                loading.fetchError = new Error("Splice search failed")
+                return
+            }
+
+            if (isAppend) {
+                dataStore.sampleAssets.push(...searchResult.items)
+                console.info("➕ Loaded more assets")
+            } else {
+                for (const sampleAsset of dataStore.sampleAssets) {
+                    if (
+                        !searchResult.items.some(
+                            (other) => sampleAsset.uuid == other.uuid
+                        ) &&
+                        sampleAsset.uuid != globalAudio.currentAsset?.uuid
+                    ) {
+                        freeDescrambledSample(sampleAsset.uuid)
+                    }
+                }
+                dataStore.sampleAssets = searchResult.items
+                currentQueryIdentity = identityAfterFetch
+                console.info("🔄️ Loaded new assets")
+            }
+            dataStore.total_records = searchResult.response_metadata.records
+
+            storeCallbacks.onbeforetagsupdate?.()
+            dataStore.tag_summary = searchResult.tag_summary
+            loading.fetchError = null
+            applyBrowseModeListReset()
+
+            void syncInLibraryFlags()
         })
         .catch((error: Error) => {
             console.error("⚠️ Failed to fetch assets", error)
