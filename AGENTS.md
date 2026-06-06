@@ -20,12 +20,14 @@ Guide for humans and coding agents working in this repository.
 1. **Understand** — this file, `README.md`, relevant code, and (for disk/DB bugs) the [dev cache](#dev-cache-inspection-local-machine). Chat may hold extra context; land durable facts in **AGENTS.md** or **README**, not a separate design doc.
 2. **Implement** — smallest correct diff; match existing style and patterns in the file you touch.
 3. **Verify** — [Commands](#commands) (`pnpm check`, `cargo test ingest_and_search`) plus manual app pass; for path/metadata issues, inspect files and SQLite on the dev `samples_dir`.
-4. **Commit** — [Commits when something works](#commits-when-something-works); finish before the next unrelated slice.
+4. **Commit** — [Commits when something works](#commits-when-something-works); **commit before** the next unrelated slice or user topic.
 5. **Document** — user-visible behavior → `README.md`; architecture, disk, workflow → this file ([self-update](#keeping-agentsmd-current-self-update)).
 
 ### Commits when something works
 
 **Default for this fork:** land a git commit whenever a slice is **verified and working**, not when the whole roadmap is done.
+
+**Hard rule — one topic, one commit (minimum):** Do not leave verified work uncommitted while continuing in chat on a **different** concern (e.g. library pagination landed → commit → *then* tab-switch cache). If the user says “commit” (or similar), run `git status` / `git diff` and commit **immediately** — do not start the next fix first. A dirty tree across multiple features is a process failure; split into separate commits when the user asked for multiple topics in one session.
 
 | Counts as “andando” (commit) | Wait (no commit yet) |
 |------------------------------|----------------------|
@@ -41,7 +43,9 @@ Guide for humans and coding agents working in this repository.
 
 **Scope:** only files for this slice; no secrets (`.env`, tokens).
 
-**Git:** no push unless the user asks; no config changes, force-push to `main`, or amend games unless Cursor user rules allow. Cursor’s default is “commit only when asked” — **here, commit each working slice during feature/fix work** unless the user says “don’t commit yet.” Ask before enormous or risky commits (mass delete, etc.). After commit, `git status` clean for that slice.
+**Git:** no push unless the user asks; no config changes, force-push to `main`, or amend games unless Cursor user rules allow. Cursor’s default is “commit only when asked” — **here, commit each working slice during feature/fix work** unless the user says “don’t commit yet.” Ask before enormous or risky commits (mass delete, etc.). After each slice: `git status` must be **clean** before you treat the next message as a new task (unless the user explicitly wants WIP left uncommitted).
+
+**Agent checklist before replying on a new sub-topic:** (1) Is the previous slice committed? (2) If not, commit or ask. (3) Only then implement the new ask.
 
 ### Prototype rules (no retrocompat by default)
 
@@ -158,7 +162,9 @@ cd src-tauri && cargo test ingest_and_search
 ### UI / store
 
 - `browseStore.mode`: `"splice"` | `"library"`.
-- Sort: Splice API sorts vs library sorts — `ensureLibraryCompatibleSort()` / `ensureSpliceCompatibleSort()` on tab switch.
+- Tab change: `switchBrowseMode()` (per-tab list cache, scroll reset via `onBrowseModeListReset`); do not hand-roll `resetAssetList()` + `fetchAssets()` on tabs.
+- Sort: Splice API sorts vs library sorts — `ensureLibraryCompatibleSort()` / `ensureSpliceCompatibleSort()` inside `switchBrowseMode`.
+- Library pagination: `LIBRARY_PER_PAGE` (local SQLite); Splice stays `PER_PAGE` + infinite scroll.
 - Filters (key, BPM, tags): `resetAssetList()` + `fetchAssets()` so pagination identity resets.
 
 ### GraphQL
