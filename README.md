@@ -51,6 +51,8 @@ https://github.com/user-attachments/assets/34f1ba90-c881-4a04-a5df-c147bdb51c2c
 3. Install dependencies: `pnpm i`
 4. Start the development server: `pnpm tauri dev`
 
+Set **samples directory** in app settings to enable the local mirror (MP3 + SQLite under `.splicerr/`). For fork-specific architecture and how we iterate, see [AGENTS.md](./AGENTS.md).
+
 ## 💡 Recommended IDE Setup
 
 [VS Code](https://code.visualstudio.com/) + [Svelte](https://marketplace.visualstudio.com/items?itemName=svelte.svelte-vscode) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)

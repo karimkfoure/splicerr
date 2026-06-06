@@ -4,16 +4,112 @@ Guide for humans and coding agents working in this repository.
 
 ## What this project is
 
-**Splicerr** is a Tauri 2 + Svelte 5 desktop client for the public Splice Sounds GraphQL API. This fork adds a **local library mirror**: samples you preview or download are stored on disk as descrambled MP3, with metadata in SQLite, and browsable offline under **My library**.
-
-Upstream context: community fix for Apollo preflight headers; not the official Splice app. See README for attribution.
+**Splicerr** is a Tauri 2 + Svelte 5 desktop client for the public Splice Sounds GraphQL API. This fork adds a **local library mirror** (offline **My library**); see product goals and architecture below. Upstream context: community Apollo preflight fix — not the official Splice app. See **README** for attribution and user-facing features.
 
 ## Product goals (current arc)
 
 1. **Splice tab** — remote search, play, drag/drop; preview **materializes** audio + metadata when `samples_dir` is set.
 2. **My library tab** — FTS search and filters on local DB; works offline if files exist.
-3. **On-disk layout** — human-readable tree under `samples_dir`, one folder per pack (GraphQL pack name), sensible subpaths, `.mp3` bytes, sidecar waveforms, one `cover.jpg` per pack.
-4. **Prototype mindset** — prefer small, correct diffs; avoid retrocompat layers unless the user asks. No ID3 tagging on files (explicitly rejected).
+3. **On-disk layout** — see [Disk conventions](#disk-conventions) (pack folders, MP3, sidecars, covers).
+4. **Prototype phase** — optimize for iteration speed, not in-place upgrades ([prototype rules](#prototype-rules-no-retrocompat-by-default)).
+
+## How we iterate (methodology)
+
+### Loop
+
+1. **Understand** — this file, `README.md`, relevant code, and (for disk/DB bugs) the [dev cache](#dev-cache-inspection-local-machine). Chat may hold extra context; land durable facts in **AGENTS.md** or **README**, not a separate design doc.
+2. **Implement** — smallest correct diff; match existing style and patterns in the file you touch.
+3. **Verify** — [Commands](#commands) (`pnpm check`, `cargo test ingest_and_search`) plus manual app pass; for path/metadata issues, inspect files and SQLite on the dev `samples_dir`.
+4. **Commit** — [Commits when something works](#commits-when-something-works); finish before the next unrelated slice.
+5. **Document** — user-visible behavior → `README.md`; architecture, disk, workflow → this file ([self-update](#keeping-agentsmd-current-self-update)).
+
+### Commits when something works
+
+**Default for this fork:** land a git commit whenever a slice is **verified and working**, not when the whole roadmap is done.
+
+| Counts as “andando” (commit) | Wait (no commit yet) |
+|------------------------------|----------------------|
+| Bug fix with checks green or clear manual repro fixed | Half-written refactor, broken build |
+| New UI behavior you or the user can exercise | Exploratory spike the user may discard |
+| Rust/TS change + passing targeted test | “Might work” without verify step |
+| `AGENTS.md` / `README.md` sync after a landed behavior change | Chat-only decisions not written anywhere |
+| Removal of dead code after a deliberate wipe/rebuild decision | Drive-by formatting across unrelated files |
+
+**One slice ≈ one commit** (split independent fixes; merge same root cause).
+
+**Message style:** English, 1–2 sentences, focus on *why* / user outcome. HEREDOC body when committing (Cursor git rules). Examples: `Fix library key filter by normalizing pitch class on ingest`; `Store pack cover_source_url for offline artwork`.
+
+**Scope:** only files for this slice; no secrets (`.env`, tokens).
+
+**Git:** no push unless the user asks; no config changes, force-push to `main`, or amend games unless Cursor user rules allow. Cursor’s default is “commit only when asked” — **here, commit each working slice during feature/fix work** unless the user says “don’t commit yet.” Ask before enormous or risky commits (mass delete, etc.). After commit, `git status` clean for that slice.
+
+### Prototype rules (no retrocompat by default)
+
+While this mirror is in active development:
+
+- **Do not** add migration paths for old on-disk filenames, legacy `.wav` mislabels, alternate path candidates, or “copy from old path to new path” unless the user explicitly asks.
+- **Do not** design for existing production users upgrading in place; the user may **wipe `samples_dir` and `.splicerr/library.db`** and rebuild from Splice.
+- **SQLite schema** may still use versioned migrations in `schema.rs` for the single local DB file during dev — but avoid complex backfill logic; prefer destructive reset + re-ingest when schema or path rules change materially.
+- **Rejected ideas** stay rejected unless reopened (e.g. ID3 tagging on MP3 for Ableton).
+
+When the product matures, revisit retrocompat deliberately — do not preempt it in code.
+
+### Agent / user collaboration
+
+- User messages in Spanish are fine; code and commit messages in English.
+- Ask before large architectural pivots; small fixes and obvious follow-ups from the same thread should proceed without re-asking.
+
+### Keeping AGENTS.md current (self-update)
+
+Chat is ephemeral; **AGENTS.md** is durable memory for how we build this fork. **README** is for end users (features, setup). No separate `docs/` design spec — it went stale; do not recreate unless the user asks.
+
+**Edit proactively** when something would help the next session:
+
+- **Workflow** norms (commit cadence, verify on dev cache, prototype rules).
+- **Decisions** with lasting impact (rejected approaches, wipe-and-re-mirror OK).
+- **Recurring pitfalls** — add once under the right architecture/engineering bullet, not duplicated here as a second list.
+- **Machine-specific facts** (e.g. dev `samples_dir`) in [Dev cache](#dev-cache-inspection-local-machine), labeled as local QA.
+- **Architecture shifts** — update the high-level sections and tree.
+
+**How to self-update well:** distill (no transcripts); stay scannable; point to code paths instead of re-specifying APIs; prune stale sections; commit AGENTS changes with the related slice or a tiny `Update AGENTS.md: …` follow-up.
+
+**Skip bloat:** one-off fixes, one-time debug steps, chat logs, secrets.
+
+**User says “update AGENTS”** — permission to rewrite methodology even without product code; commit under the same [commit rules](#commits-when-something-works).
+
+**Loop:** what worked in chat → general rule here → next session starts aligned.
+
+## Dev cache inspection (local machine)
+
+The maintainer’s current **`samples_dir`** for manual QA (not in repo, machine-specific):
+
+```text
+/Volumes/disco/splicerr
+```
+
+Use it to validate mirror behavior — agents with shell access should list and query it, not assume paths from docs alone.
+
+| What | Where |
+|------|--------|
+| Audio + pack folders | `/Volumes/disco/splicerr/{Pack}/…/*.mp3` |
+| Pack artwork (once per pack) | `/Volumes/disco/splicerr/{Pack}/cover.jpg` |
+| Waveform sidecars | `*.waveform.gz` next to each MP3 |
+| SQLite + WAL | `/Volumes/disco/splicerr/.splicerr/library.db` (+ `-wal` / `-shm`) |
+
+**Example commands** (read-only inspection):
+
+```bash
+# Tree / counts
+find "/Volumes/disco/splicerr" -name "cover.jpg" | wc -l
+find "/Volumes/disco/splicerr" -maxdepth 3 -type d | head
+
+# Schema and key stats
+sqlite3 "/Volumes/disco/splicerr/.splicerr/library.db" ".schema samples"
+sqlite3 "/Volumes/disco/splicerr/.splicerr/library.db" \
+  "SELECT key, chord_type, COUNT(*) FROM samples GROUP BY 1,2 ORDER BY 3 DESC LIMIT 20;"
+```
+
+App settings must point `samples_dir` at this path (or another) via the UI; the repo does not hardcode it.
 
 ## Architecture (high level)
 
@@ -23,7 +119,8 @@ src/lib/splice/         GraphQL query templates, types, descrambler
 src/lib/library/        Tauri invoke wrappers, materialize, localize assets
 src/lib/shared/         store, files, sample-path, pack-cover, waveform-data
 src-tauri/src/library/  SQLite schema, ingest, library_search (Rust)
-docs/local-library.md   Design reference for mirror layout and limits
+AGENTS.md               Living design + workflow for this fork (source of truth)
+README.md               User-facing features and setup
 ```
 
 ### Data flow
@@ -40,16 +137,15 @@ docs/local-library.md   Design reference for mirror layout and limits
 
 ### SQLite
 
-- Migrations in `src-tauri/src/library/schema.rs` (WAL, FTS5, key normalization v2, `cover_source_url` v3).
-- Library only lists samples with `audio_cached_at > 0` (actually cached MP3).
+- Migrations in `src-tauri/src/library/schema.rs` (WAL, FTS5, etc.).
+- Library search only includes samples with `audio_cached_at > 0` (MP3 actually on disk).
+- Keys stored normalized (uppercase); Splice often sends lowercase — filters must match.
 
-## How we work
+## Engineering conventions
 
-### Scope and diffs
+### Tests
 
-- Match existing style; minimal scope per task.
-- Do not add tests unless they cover real behavior or the user asks.
-- Do not commit or push unless the user asks (then follow git safety: no amend unless rules allow, HEREDOC messages).
+Only when they assert real behavior or the user asks (`ingest_and_search` in Rust is the baseline).
 
 ### Commands
 
@@ -59,36 +155,18 @@ pnpm check        # svelte-check
 cd src-tauri && cargo test ingest_and_search
 ```
 
-### UI / store conventions
+### UI / store
 
 - `browseStore.mode`: `"splice"` | `"library"`.
-- Sort: Splice uses API sorts; library uses `ingested_at`, `name`, `bpm`, etc. — `ensureLibraryCompatibleSort()` on tab switch.
-- Filter changes should call `resetAssetList()` + `fetchAssets()` where pagination identity matters (key, BPM).
+- Sort: Splice API sorts vs library sorts — `ensureLibraryCompatibleSort()` / `ensureSpliceCompatibleSort()` on tab switch.
+- Filters (key, BPM, tags): `resetAssetList()` + `fetchAssets()` so pagination identity resets.
 
 ### GraphQL
 
-- Query strings live in `src/lib/splice/api.ts` (copied from browser devtools). Sample fragment includes `display_file_path`, `display_name`, pack `files` with `asset_file_type_slug`.
+- Queries in `src/lib/splice/api.ts` (from browser devtools). Sample fragment: `display_file_path`, `display_name`, pack `files` with `asset_file_type_slug` (use `cover_image`, not `files[0]` blindly).
 
 ### Known limits (v1)
 
 - No import of arbitrary folders; no full-disk reconciliation scan.
-- Many one-shots have no musical key in API — key filter only matches rows with `key` set.
-- Pack covers need `cover_source_url` (from ingest) or a fresh materialize from Splice for older DB rows.
-
-## Files agents touch often
-
-| Area | Files |
-|------|--------|
-| Library Rust | `src-tauri/src/library/mod.rs`, `schema.rs` |
-| Paths | `src/lib/shared/sample-path.ts` |
-| Disk I/O | `src/lib/shared/files.svelte.ts`, `sample-bytes.ts` |
-| Covers | `src/lib/shared/pack-cover.ts` |
-| Waveforms | `src/lib/shared/waveform-data.ts`, `waveform.svelte` |
-| Browse state | `src/lib/shared/store.svelte.ts`, `routes/+page.svelte` |
-
-## Documentation
-
-- **Design**: `docs/local-library.md`
-- **Deprecated stub**: `docs/offline-sample-cache.md` (points to local-library)
-
-When behavior changes, update `docs/local-library.md` and this file if workflow or architecture shifts.
+- Many one-shots have no `key` in API — key filter only matches rows with key set (expected).
+- Pack covers require HTTPS URL at ingest (`cover_source_url`) or materialize from Splice tab once per pack.
