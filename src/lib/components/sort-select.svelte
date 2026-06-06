@@ -27,6 +27,7 @@
     const libraryOptions = [
         { value: "ingested_at", label: "Recently added" },
         { value: "name", label: "Filename" },
+        { value: "pack_name", label: "Pack" },
         { value: "duration", label: "Time" },
         { value: "key", label: "Key" },
         { value: "bpm", label: "BPM" },

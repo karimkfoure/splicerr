@@ -43,6 +43,7 @@ export const LIBRARY_PER_PAGE = 150
 
 export const LIBRARY_SORTS = [
     "name",
+    "pack_name",
     "bpm",
     "duration",
     "ingested_at",
@@ -105,16 +106,17 @@ function snapshotBrowseListCache(mode: BrowseMode) {
     }
 }
 
+export function resetSortForBrowseMode(mode: BrowseMode) {
+    queryStore.order = "DESC"
+    queryStore.sort = mode === "library" ? "ingested_at" : DEFAULT_SORT
+}
+
 /** Switch Splice ↔ My library without flashing an empty list when filters match. */
 export function switchBrowseMode(mode: BrowseMode) {
     alignListAfterBrowseModeSwitch = true
     snapshotBrowseListCache(browseStore.mode)
     browseStore.mode = mode
-    if (mode === "library") {
-        ensureLibraryCompatibleSort()
-    } else {
-        ensureSpliceCompatibleSort()
-    }
+    resetSortForBrowseMode(mode)
 
     const identity = browseQueryIdentity(mode)
     const cache = browseListCaches[mode]
@@ -210,8 +212,10 @@ const SPLICE_ONLY_SORTS = new Set<AssetSortType>([
     "recency",
 ])
 
+const LIBRARY_ONLY_SORTS = new Set<AssetSortType>(["ingested_at", "pack_name"])
+
 export function ensureSpliceCompatibleSort() {
-    if (queryStore.sort === "ingested_at") {
+    if (LIBRARY_ONLY_SORTS.has(queryStore.sort)) {
         queryStore.sort = DEFAULT_SORT
     }
 }

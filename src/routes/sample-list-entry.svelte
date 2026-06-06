@@ -67,6 +67,9 @@
     })
 
     const pack = $derived(sampleAsset.parents.items[0])
+    const packName = $derived(
+        pack?.name ? pack.name.split("/").slice(-1)[0] : ""
+    )
     const name = $derived(
         sampleAsset.display_name
             ? sampleDisplayFileName(sampleAsset.display_name)
@@ -92,7 +95,21 @@
     onmousedown={() => globalAudio.selectSampleAsset(sampleAsset, false)}
     ondragstart={(event) => handleSampleDrag(event, sampleAsset)}
 >
-    <PackPreview {pack} />
+    <div
+        class="flex items-start gap-2 min-w-[8.5rem] w-44 flex-shrink-0 overflow-hidden"
+    >
+        <PackPreview {pack} />
+        <Tooltip.Provider>
+            <Tooltip.Root>
+                <Tooltip.Trigger
+                    class="min-w-0 text-left text-xs text-muted-foreground line-clamp-2 leading-snug cursor-grab"
+                >
+                    {packName || "—"}
+                </Tooltip.Trigger>
+                <Tooltip.Content>{packName || "—"}</Tooltip.Content>
+            </Tooltip.Root>
+        </Tooltip.Provider>
+    </div>
     <Button
         variant="ghost"
         bind:ref={playButtonRef}

@@ -116,6 +116,7 @@ export type AssetSortType =
     | "duration"
     | "key"
     | "name"
+    | "pack_name"
     | "ingested_at"
 
 export type AssetTypeSlug = "sample" | "preset" | "pack"

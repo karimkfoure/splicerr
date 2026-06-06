@@ -414,6 +414,7 @@ mod search {
             "duration" => "s.duration_ms",
             "key" => "s.key",
             "ingested_at" => "s.ingested_at",
+            "pack_name" => "s.pack_name",
             _ => "s.name",
         };
 

@@ -163,7 +163,7 @@ cd src-tauri && cargo test ingest_and_search
 
 - `browseStore.mode`: `"splice"` | `"library"`.
 - Tab change: `switchBrowseMode()` (per-tab list cache, scroll reset via `onBrowseModeListReset`); do not hand-roll `resetAssetList()` + `fetchAssets()` on tabs.
-- Sort: Splice API sorts vs library sorts — `ensureLibraryCompatibleSort()` / `ensureSpliceCompatibleSort()` inside `switchBrowseMode`.
+- Sort: reset on tab change via `resetSortForBrowseMode()` (`relevance` / Splice, `ingested_at` / library); `ensure*CompatibleSort()` remains a safety net on fetch.
 - Library pagination: `LIBRARY_PER_PAGE` (local SQLite); Splice stays `PER_PAGE` + infinite scroll.
 - Filters (key, BPM, tags): `resetAssetList()` + `fetchAssets()` so pagination identity resets.
 

@@ -358,9 +358,22 @@
             <div
                 class="flex gap-2 items-center justify-between overflow-clip px-2"
             >
-                <div class="w-12 flex-shrink-0 text-xs text-muted-foreground">
-                    Pack
-                </div>
+                {#if browseStore.mode === "library"}
+                    <SortHeader
+                        value="pack_name"
+                        label="Pack"
+                        sort={queryStore.sort}
+                        order={queryStore.order}
+                        onsort={updateSort}
+                        class="min-w-[8.5rem] w-44 flex-shrink-0"
+                    />
+                {:else}
+                    <div
+                        class="min-w-[8.5rem] w-44 flex-shrink-0 text-xs text-muted-foreground"
+                    >
+                        Pack
+                    </div>
+                {/if}
                 <div
                     class="w-12 flex-shrink-0 text-xs text-muted-foreground"
                 ></div>
