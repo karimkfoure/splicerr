@@ -44,23 +44,24 @@
 </script>
 
 <div class={cn("w-[180px] flex-grow flex-shrink-0", className)}>
-    <button
+    <div
+        role="search"
         class={cn(
-            "flex items-center border-input border px-3 rounded-md w-full cursor-text gap-2 ring-offset-background focus-within:ring-ring focus:ring-ring h-9 justify-between whitespace-nowrap bg-transparent py-2 text-sm shadow-sm focus-within:outline-none focus:outline-none focus-within:ring-1 focus:ring-1 disabled:cursor-not-allowed disabled:opacity-50",
+            "flex items-center border-input border px-3 rounded-md w-full cursor-text gap-2 ring-offset-background focus-within:ring-ring focus:ring-ring h-9 justify-between whitespace-nowrap bg-transparent py-2 text-sm shadow-sm focus-within:outline-none focus-within:ring-1 disabled:cursor-not-allowed disabled:opacity-50",
             className
         )}
         onmousedown={(e) => {
-            e.preventDefault()
-            inputRef.focus()
+            if (e.target !== inputRef) {
+                e.preventDefault()
+                inputRef.focus()
+            }
         }}
-        tabindex={-1}
-        onclick={() => inputRef.focus()}
     >
         <Search class="mr-2 size-4 shrink-0 opacity-50" />
         <input
             bind:value
             bind:this={inputRef}
-            type="search"
+            type="text"
             name="splicerr-sample-search"
             autocomplete="off"
             autocorrect="off"
@@ -111,20 +112,20 @@
                 if (value !== lastSubmittedValue) {
                     debounce(submit)
                 }
-                querySplice(SoundsSearchAutocomplete, { term: value }).then(
+                const termForRequest = value
+                querySplice(SoundsSearchAutocomplete, { term: termForRequest }).then(
                     (response) => {
+                        if (termForRequest !== value) return
                         suggestions = (
                             response as SoundsSearchAutocompleteResponse
                         ).data.soundsSearchSuggestions.results
                         lastSuggestionValue = value.trim().toLowerCase()
-                        inputRef.selectionStart = inputRef.selectionEnd =
-                            value.length
                     }
                 )
             }}
-            class="select-all placeholder:text-muted-foreground flex h-10 w-full rounded-md bg-transparent py-3 outline-none disabled:cursor-not-allowed disabled:opacity-50 text-sm"
+            class="placeholder:text-muted-foreground flex h-10 w-full rounded-md bg-transparent py-3 outline-none disabled:cursor-not-allowed disabled:opacity-50 text-sm"
         />
-    </button>
+    </div>
     <div class="relative w-full">
         <div class="absolute top-2 z-20">
             <!-- TODO: Use a popover instead -->
