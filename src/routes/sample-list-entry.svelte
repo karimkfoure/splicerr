@@ -96,19 +96,25 @@
     ondragstart={(event) => handleSampleDrag(event, sampleAsset)}
 >
     <div
-        class="flex items-start gap-2 min-w-[8.5rem] w-44 flex-shrink-0 overflow-hidden"
+        class="flex items-center gap-2 min-w-[8.5rem] w-44 flex-shrink-0"
     >
         <PackPreview {pack} />
-        <Tooltip.Provider>
-            <Tooltip.Root>
-                <Tooltip.Trigger
-                    class="min-w-0 text-left text-xs text-muted-foreground line-clamp-2 leading-snug cursor-grab"
-                >
-                    {packName || "—"}
-                </Tooltip.Trigger>
-                <Tooltip.Content>{packName || "—"}</Tooltip.Content>
-            </Tooltip.Root>
-        </Tooltip.Provider>
+        <div class="flex min-h-12 min-w-0 flex-1 items-center">
+            <Tooltip.Provider>
+                <Tooltip.Root>
+                    <Tooltip.Trigger
+                        class="block w-full min-w-0 text-left cursor-grab"
+                    >
+                        <span
+                            class="pack-row-name text-xs text-muted-foreground"
+                        >
+                            {packName || "—"}
+                        </span>
+                    </Tooltip.Trigger>
+                    <Tooltip.Content>{packName || "—"}</Tooltip.Content>
+                </Tooltip.Root>
+            </Tooltip.Provider>
+        </div>
     </div>
     <Button
         variant="ghost"
@@ -269,3 +275,14 @@
         </Tooltip.Root>
     </Tooltip.Provider>
 </button>
+
+<style>
+    .pack-row-name {
+        display: -webkit-box;
+        -webkit-box-orient: vertical;
+        -webkit-line-clamp: 3;
+        overflow: hidden;
+        line-height: 1.25;
+        word-break: break-word;
+    }
+</style>
