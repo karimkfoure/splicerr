@@ -129,6 +129,43 @@ fn splice_response(app: tauri::AppHandle, id: u64, text: String) {
     }
 }
 
+/// Frontend debug lines (bulk download stalls, etc.) → `pnpm tauri dev` terminal.
+#[tauri::command]
+fn dev_log(app: tauri::AppHandle, level: String, message: String) -> Result<(), String> {
+    use std::fs::OpenOptions;
+    use std::io::Write;
+
+    let banner = "══════════════════════════════════════════════════════════════";
+    let stamped = format!(
+        "[{}] [{level}]\n{message}",
+        chrono_lite_timestamp()
+    );
+    eprintln!("{banner}\n[splicerr]{stamped}\n{banner}");
+    let _ = std::io::stderr().flush();
+
+    if let Ok(dir) = app.path().app_cache_dir() {
+        let path = dir.join("bulk-download-debug.log");
+        if let Ok(mut file) = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+        {
+            let _ = writeln!(file, "{stamped}");
+            let _ = writeln!(file, "{banner}");
+        }
+    }
+    Ok(())
+}
+
+fn chrono_lite_timestamp() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    format!("unix:{secs}")
+}
+
 /// Called once by the bridge webview after it has loaded and wired up its listener.
 #[tauri::command]
 fn splice_bridge_ready(app: tauri::AppHandle) {
@@ -155,6 +192,7 @@ pub fn run() {
         .manage(BridgeState::default())
         .manage(LibraryState::default())
         .invoke_handler(tauri::generate_handler![
+            dev_log,
             splice_graphql,
             splice_response,
             splice_bridge_ready,

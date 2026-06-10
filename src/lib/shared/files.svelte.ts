@@ -113,9 +113,18 @@ export type MaterializedSample = {
     wroteNewAudio: boolean
 }
 
+export type EnsureSampleMp3Options = {
+    cacheWaveform?: boolean
+    /** Bulk: pack covers are synced once per batch. */
+    skipPackCover?: boolean
+    /** Bulk: skip reading MP3 bytes when the file already exists. */
+    skipReadIfCached?: boolean
+    quiet?: boolean
+}
+
 export async function ensureSampleMp3OnDisk(
     sampleAsset: SampleAsset,
-    options?: { cacheWaveform?: boolean }
+    options?: EnsureSampleMp3Options
 ): Promise<MaterializedSample> {
     if (!config.samples_dir || !isSamplesDirValid()) {
         throw new Error("❌ Samples Directory not set")
@@ -128,7 +137,9 @@ export async function ensureSampleMp3OnDisk(
     let wroteNewAudio = false
 
     if (await exists(absolutePath)) {
-        bytes = await readFile(absolutePath)
+        bytes = options?.skipReadIfCached
+            ? new Uint8Array(0)
+            : await readFile(absolutePath)
     } else {
         bytes = await fetchDescrambledMp3Bytes(sampleAsset)
         await ensureFileDirectoryExists(absolutePath)
@@ -136,7 +147,9 @@ export async function ensureSampleMp3OnDisk(
         await file.write(bytes)
         await file.close()
         wroteNewAudio = true
-        console.log("💾 Saved sample MP3 at", absolutePath)
+        if (!options?.quiet) {
+            console.log("💾 Saved sample MP3 at", absolutePath)
+        }
     }
 
     let waveformRelativePath: string | null = null
@@ -147,7 +160,9 @@ export async function ensureSampleMp3OnDisk(
         )
     }
 
-    await cachePackCover(sampleAsset)
+    if (!options?.skipPackCover) {
+        await cachePackCover(sampleAsset)
+    }
 
     return {
         absolutePath,

@@ -1,4 +1,4 @@
-import { querySplice, SamplesSearch } from "$lib/splice/api"
+import { querySplice, SamplesSearch, SamplesSearchCursor } from "$lib/splice/api"
 import type {
     AssetCategorySlug,
     AssetSortType,
@@ -39,6 +39,8 @@ import { config, isSamplesDirValid, settingsDialog } from "./config.svelte"
 
 export const DEFAULT_SORT = "relevance"
 export const PER_PAGE = 50
+/** Splice page size while walking full result sets in bulk download. */
+export const BULK_DOWNLOAD_SPLICE_PAGE_SIZE = 100
 /** Local SQLite search — one round-trip can safely return more than Splice API pages. */
 export const LIBRARY_PER_PAGE = 150
 
@@ -447,13 +449,16 @@ export function getSpliceQueryIdentity() {
 }
 
 /** One Splice search page for the current filters (used by bulk download). */
-export async function fetchSpliceSearchPage(page: number) {
+export async function fetchSpliceSearchPage(
+    page: number,
+    limit = PER_PAGE
+) {
     ensureSpliceCompatibleSort()
     const response = await querySplice(SamplesSearch, {
         ...queryIdentity,
         parent_asset_uuid: queryStore.pack_uuid,
         page,
-        limit: PER_PAGE,
+        limit,
     })
     const searchResult = (response as SamplesSearchResponse | null)?.data
         ?.assetsSearch
@@ -461,6 +466,57 @@ export async function fetchSpliceSearchPage(page: number) {
     return {
         items: searchResult.items,
         totalRecords: searchResult.response_metadata.records,
+        currentPage: searchResult.pagination_metadata.currentPage,
+        totalPages: searchResult.pagination_metadata.totalPages,
+    }
+}
+
+/** Sort params frozen when a bulk download starts (matches the visible list). */
+export type BulkSpliceListingSort = {
+    sort: AssetSortType
+    order: SortOrder
+    random_seed: string | null
+}
+
+export function captureBulkSpliceListingSort(): BulkSpliceListingSort {
+    return {
+        sort: queryStore.sort,
+        order: queryStore.order,
+        random_seed: queryStore.random_seed,
+    }
+}
+
+/**
+ * Cursor-based Splice search page (bulk download listing).
+ * Pass `listingSort` from {@link captureBulkSpliceListingSort} at job start.
+ */
+export async function fetchSpliceSearchCursorPage(
+    cursor: string | null,
+    limit = PER_PAGE,
+    listingSort?: BulkSpliceListingSort
+) {
+    ensureSpliceCompatibleSort()
+    const sort = listingSort?.sort ?? queryStore.sort
+    const order = listingSort?.order ?? queryStore.order
+    const random_seed =
+        listingSort?.random_seed ?? queryStore.random_seed
+    const response = await querySplice(SamplesSearchCursor, {
+        ...queryIdentity,
+        sort,
+        order,
+        random_seed,
+        parent_asset_uuid: queryStore.pack_uuid,
+        cursor,
+        limit,
+    })
+    const searchResult = (response as SamplesSearchResponse | null)?.data
+        ?.assetsSearch
+    if (!searchResult) return null
+    const nextCursor = searchResult.response_metadata.next ?? null
+    return {
+        items: searchResult.items,
+        totalRecords: searchResult.response_metadata.records,
+        nextCursor,
     }
 }
 

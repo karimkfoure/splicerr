@@ -363,15 +363,19 @@
                 >
                     {#if bulkDownloadState.running}
                         <LoaderCircle class="size-4 animate-spin" />
-                        {#if bulkDownloadState.phase === "listing"}
-                            <span class="text-xs tabular-nums"
-                                >{bulkDownloadState.listed.toLocaleString()}</span
-                            >
-                        {:else}
-                            <span class="text-xs tabular-nums"
-                                >{bulkDownloadState.completed.toLocaleString()}/{bulkDownloadState.total.toLocaleString()}</span
-                            >
-                        {/if}
+                        <span class="text-xs tabular-nums">
+                            {#if bulkDownloadState.phase === "listing"}
+                                {#if bulkDownloadState.total > 0}
+                                    {bulkDownloadState.total.toLocaleString()}
+                                {:else if bulkDownloadState.reportedTotal > 0}
+                                    {bulkDownloadState.scanned.toLocaleString()}/{bulkDownloadState.reportedTotal.toLocaleString()}
+                                {:else}
+                                    {bulkDownloadState.scanned.toLocaleString()}
+                                {/if}
+                            {:else}
+                                {bulkDownloadState.completed.toLocaleString()}/{bulkDownloadState.total.toLocaleString()}
+                            {/if}
+                        </span>
                     {:else}
                         <Download class="size-4" />
                         <span class="text-xs">Download all</span>

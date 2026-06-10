@@ -108,31 +108,55 @@ pub fn library_batch_flags(
     state: State<LibraryState>,
     uuids: Vec<String>,
 ) -> Result<HashMap<String, LibrarySampleFlags>, String> {
-    with_conn(&state, |conn| {
-        let mut out = HashMap::new();
-        for uuid in uuids {
-            let row: Option<(i64, i32)> = conn
-                .query_row(
-                    "SELECT audio_cached_at, favorite FROM samples WHERE uuid = ?1",
-                    params![uuid],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
-                )
-                .optional()
-                .map_err(|e| e.to_string())?;
-            let flags = match row {
-                Some((cached, fav)) => LibrarySampleFlags {
-                    in_library: cached > 0,
-                    favorite: fav != 0,
-                },
-                None => LibrarySampleFlags {
+    with_conn(&state, |conn| batch_flags_for_uuids(conn, &uuids))
+}
+
+fn batch_flags_for_uuids(
+    conn: &Connection,
+    uuids: &[String],
+) -> Result<HashMap<String, LibrarySampleFlags>, String> {
+    let mut out: HashMap<String, LibrarySampleFlags> = uuids
+        .iter()
+        .map(|uuid| {
+            (
+                uuid.clone(),
+                LibrarySampleFlags {
                     in_library: false,
                     favorite: false,
                 },
-            };
-            out.insert(uuid, flags);
-        }
-        Ok(out)
-    })
+            )
+        })
+        .collect();
+
+    if uuids.is_empty() {
+        return Ok(out);
+    }
+
+    let placeholders = std::iter::repeat_n("?", uuids.len())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "SELECT uuid, audio_cached_at, favorite FROM samples WHERE uuid IN ({placeholders})"
+    );
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let mut rows = stmt
+        .query(rusqlite::params_from_iter(uuids.iter()))
+        .map_err(|e| e.to_string())?;
+
+    while let Some(row) = rows.next().map_err(|e| e.to_string())? {
+        let uuid: String = row.get(0).map_err(|e| e.to_string())?;
+        let cached: i64 = row.get(1).map_err(|e| e.to_string())?;
+        let fav: i32 = row.get(2).map_err(|e| e.to_string())?;
+        out.insert(
+            uuid,
+            LibrarySampleFlags {
+                in_library: cached > 0,
+                favorite: fav != 0,
+            },
+        );
+    }
+
+    Ok(out)
 }
 
 #[tauri::command(rename_all = "camelCase")]

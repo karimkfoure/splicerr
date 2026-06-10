@@ -11,6 +11,8 @@ export type SamplesSearchResponse = {
             }
             response_metadata: {
                 records: number
+                next?: string | null
+                previous?: string | null
                 __typename: string
             }
         }
