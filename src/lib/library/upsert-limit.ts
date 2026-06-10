@@ -1,5 +1,5 @@
 /** Cap concurrent `library_upsert_from_asset` invokes to reduce SQLite bridge contention. */
-const LIBRARY_UPSERT_MAX = 14
+const LIBRARY_UPSERT_MAX = 20
 
 let active = 0
 const waitQueue: (() => void)[] = []

@@ -93,6 +93,86 @@ export async function libraryListPacks(samplesDir: string, query?: string) {
     })
 }
 
+export type PackMirrorStats = {
+    cached: number
+    listableTotal: number | null
+}
+
+export async function libraryPackMirrorStats(packUuids: string[]) {
+    if (!packUuids.length) return {} as Record<string, PackMirrorStats>
+    return invoke<Record<string, PackMirrorStats>>(
+        "library_pack_mirror_stats",
+        { packUuids }
+    )
+}
+
+export async function librarySetPackListableTotal(
+    packUuid: string,
+    total: number
+) {
+    return invoke<void>("library_set_pack_listable_total", {
+        packUuid,
+        total,
+    })
+}
+
+export async function libraryPackCachedCounts(packUuids: string[]) {
+    if (!packUuids.length) return {} as Record<string, number>
+    const stats = await libraryPackMirrorStats(packUuids)
+    return Object.fromEntries(
+        Object.entries(stats).map(([uuid, s]) => [uuid, s.cached])
+    )
+}
+
+export type PackRankObservation = {
+    packUuid: string
+    packName?: string | null
+    rank: number
+    observedAt: number
+    source?: string | null
+}
+
+export async function recordPackRankObservations(params: {
+    scopeKey: string
+    observations: PackRankObservation[]
+}) {
+    if (!params.observations.length) return
+    return invoke<void>("library_record_pack_ranks", {
+        params: {
+            scopeKey: params.scopeKey,
+            observations: params.observations.map((o) => ({
+                packUuid: o.packUuid,
+                packName: o.packName ?? null,
+                rank: o.rank,
+                observedAt: o.observedAt,
+                source: o.source ?? null,
+            })),
+        },
+    })
+}
+
+export type PackPopularityScoreRow = {
+    score: number
+    bestRank: number | null
+    observationCount: number
+    updatedAt: number
+}
+
+export async function libraryPackPopularityScores(
+    scopeKey: string,
+    packUuids?: string[]
+) {
+    return invoke<Record<string, PackPopularityScoreRow>>(
+        "library_pack_popularity_scores",
+        {
+            params: {
+                scopeKey,
+                packUuids: packUuids?.length ? packUuids : null,
+            },
+        }
+    )
+}
+
 export type LibrarySearchResponse = {
     items: SampleAsset[]
     totalRecords: number

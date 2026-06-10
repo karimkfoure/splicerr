@@ -10,6 +10,7 @@
     import Shuffle from "lucide-svelte/icons/shuffle"
     import Download from "lucide-svelte/icons/download"
     import LoaderCircle from "lucide-svelte/icons/loader-circle"
+    import Package from "lucide-svelte/icons/package"
     import Button from "$lib/components/ui/button/button.svelte"
     import ProgressLoading from "$lib/components/progress-loading.svelte"
     import Separator from "$lib/components/ui/separator/separator.svelte"
@@ -39,10 +40,15 @@
     import * as Dialog from "$lib/components/ui/dialog"
     import KeySelect from "$lib/components/key-select.svelte"
     import PackSelect from "$lib/components/pack-select.svelte"
+    import SamplePackSyncDialog from "$lib/components/sample-pack-sync-dialog.svelte"
     import {
         bulkDownloadState,
         downloadAllSpliceResults,
+        requestStopBulkDownload,
     } from "$lib/shared/bulk-download.svelte"
+    import { getActiveDownloadSessionTag } from "$lib/shared/download-session"
+    import { packSyncManager } from "$lib/shared/pack-sync.svelte"
+    import { toast } from "$lib/shared/toast.svelte"
 
     // TODO: Taxonomy comboboxes (maybe just pass all tags to each)
     // const instrumentTags = $derived(() =>
@@ -59,7 +65,8 @@
 
     $effect(() => {
         if (
-            queryStore.sort in ["random", "popularity", "relevance", "recency"]
+            queryStore.sort in
+            ["random", "popularity", "relevance", "recency", "pack_popularity"]
         ) {
             queryStore.order = "DESC"
         }
@@ -83,6 +90,7 @@
 
     let expandTags = $state(false)
     let bulkDownloadConfirmOpen = $state(false)
+    let samplePackSyncOpen = $state(false)
 
     let viewportRef = $state<HTMLElement>(null!)
     let tagsContainerRef = $state<HTMLElement>(null!)
@@ -354,16 +362,49 @@
             {#if browseStore.mode === "splice"}
                 <Button
                     variant="outline"
-                    class="h-9 shrink-0 gap-1.5 px-2.5"
-                    disabled={bulkDownloadState.running ||
-                        dataStore.total_records === 0}
+                    size="icon"
+                    class="h-9 w-9 shrink-0"
+                    title="Sample pack sync"
+                    disabled={bulkDownloadState.running &&
+                        !packSyncManager.active}
                     onclick={() => {
+                        samplePackSyncOpen = true
+                    }}
+                >
+                    <Package class="size-4" />
+                </Button>
+                <Button
+                    variant="outline"
+                    class="h-9 shrink-0 gap-1.5 px-2.5 max-w-[11rem]"
+                    disabled={bulkDownloadState.running &&
+                    !packSyncManager.active
+                        ? false
+                        : dataStore.total_records === 0 ||
+                          packSyncManager.active ||
+                          getActiveDownloadSessionTag() === "pack-sync"}
+                    onclick={() => {
+                        if (
+                            bulkDownloadState.running &&
+                            !packSyncManager.active
+                        ) {
+                            requestStopBulkDownload()
+                            return
+                        }
+                        if (
+                            packSyncManager.active ||
+                            getActiveDownloadSessionTag() === "pack-sync"
+                        ) {
+                            toast("Stop pack sync before Download all.", {
+                                variant: "info",
+                            })
+                            return
+                        }
                         bulkDownloadConfirmOpen = true
                     }}
                 >
-                    {#if bulkDownloadState.running}
-                        <LoaderCircle class="size-4 animate-spin" />
-                        <span class="text-xs tabular-nums">
+                    {#if bulkDownloadState.running && !packSyncManager.active}
+                        <LoaderCircle class="size-4 animate-spin shrink-0" />
+                        <span class="text-xs tabular-nums truncate">
                             {#if bulkDownloadState.phase === "listing"}
                                 {#if bulkDownloadState.total > 0}
                                     {bulkDownloadState.total.toLocaleString()}
@@ -553,6 +594,8 @@
     </ScrollArea>
     <AudioPlayer onprev={gotoPrev} onnext={gotoNext} />
 
+    <SamplePackSyncDialog bind:open={samplePackSyncOpen} />
+
     <Dialog.Root bind:open={bulkDownloadConfirmOpen}>
         <Dialog.Content>
             <Dialog.Header>
@@ -560,7 +603,7 @@
                 <Dialog.Description>
                     Up to {dataStore.total_records.toLocaleString()} samples from
                     this search will be downloaded. Items already in your library
-                    are skipped. This may take a while.
+                    are skipped.
                 </Dialog.Description>
             </Dialog.Header>
             <Dialog.Footer>

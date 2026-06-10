@@ -86,7 +86,36 @@ export type PackAsset = {
     files: Array<AssetFile>
     /** HTTPS cover URL persisted in local library DB (offline re-fetch). */
     cover_source_url?: string | null
+    main_genre?: string | null
+    child_asset_counts?: Array<{
+        type: string
+        count: number
+        __typename?: string
+    }>
+    provider?: {
+        name: string
+        permalink_slug?: string
+        __typename?: string
+    }
     __typename: string
+}
+
+export type PacksSearchResponse = {
+    data: {
+        assetsSearch: {
+            items: PackAsset[]
+            pagination_metadata: {
+                currentPage: number
+                totalPages: number
+                __typename: string
+            }
+            response_metadata: {
+                records: number
+                __typename: string
+            }
+            __typename: string
+        }
+    }
 }
 
 export type SoundsSearchAutocompleteResponse = {
@@ -119,6 +148,7 @@ export type AssetSortType =
     | "key"
     | "name"
     | "pack_name"
+    | "pack_popularity"
     | "ingested_at"
 
 export type AssetTypeSlug = "sample" | "preset" | "pack"

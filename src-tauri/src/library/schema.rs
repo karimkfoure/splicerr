@@ -90,5 +90,40 @@ pub fn migrate(conn: &Connection) -> Result<(), String> {
         conn.execute("INSERT INTO schema_migrations (version) VALUES (3)", [])
             .map_err(|e| e.to_string())?;
     }
+    if v < 4 {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS pack_rank_observations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                pack_uuid TEXT NOT NULL,
+                scope_key TEXT NOT NULL,
+                rank INTEGER NOT NULL,
+                observed_at INTEGER NOT NULL,
+                source TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_pack_rank_obs_scope_pack
+                ON pack_rank_observations(scope_key, pack_uuid, observed_at DESC);
+            CREATE TABLE IF NOT EXISTS pack_popularity_scores (
+                pack_uuid TEXT NOT NULL,
+                scope_key TEXT NOT NULL,
+                score REAL NOT NULL,
+                best_rank INTEGER,
+                observation_count INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY (pack_uuid, scope_key)
+            );
+            ALTER TABLE samples ADD COLUMN pack_popularity_score REAL;",
+        )
+        .map_err(|e| e.to_string())?;
+        conn.execute("INSERT INTO schema_migrations (version) VALUES (4)", [])
+            .map_err(|e| e.to_string())?;
+    }
+    if v < 5 {
+        conn.execute_batch(
+            "ALTER TABLE packs ADD COLUMN listable_sample_total INTEGER;",
+        )
+        .map_err(|e| e.to_string())?;
+        conn.execute("INSERT INTO schema_migrations (version) VALUES (5)", [])
+            .map_err(|e| e.to_string())?;
+    }
     Ok(())
 }

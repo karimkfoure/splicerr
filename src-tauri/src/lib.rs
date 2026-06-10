@@ -204,6 +204,11 @@ pub fn run() {
             library::library_search,
             library::library_tag_summary,
             library::library_list_packs,
+            library::library_pack_cached_counts,
+            library::library_pack_mirror_stats,
+            library::library_set_pack_listable_total,
+            library::library_record_pack_ranks,
+            library::library_pack_popularity_scores,
         ])
         .setup(|app| {
             // Hidden webview parked on the Splice GraphQL host. Navigating here

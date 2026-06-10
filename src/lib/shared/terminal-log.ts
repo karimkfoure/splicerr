@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core"
+import { sanitizeDownloadLogMessage } from "$lib/shared/log-sanitize"
 import { toast } from "$lib/shared/toast.svelte"
 
 export type TerminalLogLevel = "info" | "warn" | "error"
@@ -9,7 +10,8 @@ export async function terminalLog(
     level: TerminalLogLevel = "warn"
 ) {
     try {
-        await invoke("dev_log", { level, message })
+        const safe = sanitizeDownloadLogMessage(message)
+        await invoke("dev_log", { level, message: safe })
     } catch (error) {
         const detail =
             error instanceof Error ? error.message : String(error)

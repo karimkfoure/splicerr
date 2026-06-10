@@ -1,3 +1,4 @@
+mod popularity;
 mod schema;
 
 use rusqlite::{params, Connection, OptionalExtension};
@@ -109,6 +110,137 @@ pub fn library_batch_flags(
     uuids: Vec<String>,
 ) -> Result<HashMap<String, LibrarySampleFlags>, String> {
     with_conn(&state, |conn| batch_flags_for_uuids(conn, &uuids))
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PackMirrorStats {
+    pub cached: i64,
+    pub listable_total: Option<i64>,
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub fn library_pack_cached_counts(
+    state: State<LibraryState>,
+    pack_uuids: Vec<String>,
+) -> Result<HashMap<String, i64>, String> {
+    with_conn(&state, |conn| pack_cached_counts(conn, &pack_uuids))
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub fn library_pack_mirror_stats(
+    state: State<LibraryState>,
+    pack_uuids: Vec<String>,
+) -> Result<HashMap<String, PackMirrorStats>, String> {
+    with_conn(&state, |conn| pack_mirror_stats(conn, &pack_uuids))
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub fn library_set_pack_listable_total(
+    state: State<LibraryState>,
+    pack_uuid: String,
+    total: i64,
+) -> Result<(), String> {
+    with_conn(&state, |conn| set_pack_listable_total(conn, &pack_uuid, total))
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub fn library_record_pack_ranks(
+    state: State<LibraryState>,
+    params: popularity::RecordPackRanksParams,
+) -> Result<(), String> {
+    with_conn(&state, |conn| popularity::record_pack_ranks(conn, params))
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub fn library_pack_popularity_scores(
+    state: State<LibraryState>,
+    params: popularity::PackPopularityScoresParams,
+) -> Result<HashMap<String, popularity::PackPopularityScore>, String> {
+    with_conn(&state, |conn| popularity::pack_popularity_scores(conn, params))
+}
+
+fn pack_cached_counts(
+    conn: &Connection,
+    pack_uuids: &[String],
+) -> Result<HashMap<String, i64>, String> {
+    let mut out: HashMap<String, i64> = pack_uuids
+        .iter()
+        .map(|uuid| (uuid.clone(), 0))
+        .collect();
+    if pack_uuids.is_empty() {
+        return Ok(out);
+    }
+    let placeholders = std::iter::repeat_n("?", pack_uuids.len())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "SELECT pack_uuid, COUNT(*) FROM samples WHERE pack_uuid IN ({placeholders}) AND audio_cached_at > 0 GROUP BY pack_uuid"
+    );
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let mut rows = stmt
+        .query(rusqlite::params_from_iter(pack_uuids.iter()))
+        .map_err(|e| e.to_string())?;
+    while let Some(row) = rows.next().map_err(|e| e.to_string())? {
+        let pack_uuid: String = row.get(0).map_err(|e| e.to_string())?;
+        let count: i64 = row.get(1).map_err(|e| e.to_string())?;
+        out.insert(pack_uuid, count);
+    }
+    Ok(out)
+}
+
+fn pack_mirror_stats(
+    conn: &Connection,
+    pack_uuids: &[String],
+) -> Result<HashMap<String, PackMirrorStats>, String> {
+    let cached = pack_cached_counts(conn, pack_uuids)?;
+    let mut listable: HashMap<String, Option<i64>> = pack_uuids
+        .iter()
+        .map(|u| (u.clone(), None))
+        .collect();
+    if !pack_uuids.is_empty() {
+        let placeholders = std::iter::repeat_n("?", pack_uuids.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "SELECT uuid, listable_sample_total FROM packs WHERE uuid IN ({placeholders})"
+        );
+        let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+        let mut rows = stmt
+            .query(rusqlite::params_from_iter(pack_uuids.iter()))
+            .map_err(|e| e.to_string())?;
+        while let Some(row) = rows.next().map_err(|e| e.to_string())? {
+            let uuid: String = row.get(0).map_err(|e| e.to_string())?;
+            let total: Option<i64> = row.get(1).map_err(|e| e.to_string())?;
+            listable.insert(uuid, total);
+        }
+    }
+    Ok(pack_uuids
+        .iter()
+        .map(|uuid| {
+            (
+                uuid.clone(),
+                PackMirrorStats {
+                    cached: *cached.get(uuid).unwrap_or(&0),
+                    listable_total: listable.get(uuid).copied().flatten(),
+                },
+            )
+        })
+        .collect())
+}
+
+fn set_pack_listable_total(
+    conn: &Connection,
+    pack_uuid: &str,
+    total: i64,
+) -> Result<(), String> {
+    conn.execute(
+        "INSERT INTO packs (uuid, name, listable_sample_total) VALUES (?1, 'Unknown pack', ?2)
+         ON CONFLICT(uuid) DO UPDATE SET listable_sample_total = excluded.listable_sample_total",
+        rusqlite::params![pack_uuid, total],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 fn batch_flags_for_uuids(
@@ -457,20 +589,29 @@ mod search {
         } else {
             "DESC"
         };
-        let sort_col = match params.sort.as_str() {
-            "bpm" => "s.bpm",
-            "duration" => "s.duration_ms",
-            "key" => "s.key",
-            "ingested_at" => "s.ingested_at",
-            "pack_name" => "s.pack_name",
-            _ => "s.name",
-        };
-
         let offset = (params.page.max(1) - 1) * params.limit.max(1);
-        let sql = format!(
-            "SELECT s.uuid FROM samples s WHERE {} ORDER BY {} {} LIMIT {} OFFSET {}",
-            where_sql, sort_col, order, params.limit, offset
-        );
+        let sql = if params.sort == "pack_popularity" {
+            format!(
+                "SELECT s.uuid FROM samples s WHERE {} ORDER BY s.pack_popularity_score IS NULL, s.pack_popularity_score {} , s.ingested_at DESC LIMIT {} OFFSET {}",
+                where_sql,
+                if order == "ASC" { "ASC" } else { "DESC" },
+                params.limit,
+                offset
+            )
+        } else {
+            let sort_col = match params.sort.as_str() {
+                "bpm" => "s.bpm",
+                "duration" => "s.duration_ms",
+                "key" => "s.key",
+                "ingested_at" => "s.ingested_at",
+                "pack_name" => "s.pack_name",
+                _ => "s.name",
+            };
+            format!(
+                "SELECT s.uuid FROM samples s WHERE {} ORDER BY {} {} LIMIT {} OFFSET {}",
+                where_sql, sort_col, order, params.limit, offset
+            )
+        };
 
         let uuids: Vec<String> = query_rows(conn, &sql, &where_params, |r| r.get(0))?;
 

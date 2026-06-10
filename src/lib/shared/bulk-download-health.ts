@@ -2,7 +2,7 @@
 
 export const BULK_DOWNLOAD_CONCURRENCY_MIN = 25
 export const BULK_DOWNLOAD_CONCURRENCY_MAX = 100
-export const BULK_DOWNLOAD_CONCURRENCY_INITIAL = 50
+export const BULK_DOWNLOAD_CONCURRENCY_INITIAL = 75
 
 export type BulkDownloadSliceOutcome = {
     items: number

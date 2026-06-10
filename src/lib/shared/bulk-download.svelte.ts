@@ -11,10 +11,17 @@ import {
     BULK_DOWNLOAD_SPLICE_PAGE_SIZE,
     browseStore,
     captureBulkSpliceListingSort,
+    captureSpliceSearchFilters,
     fetchSpliceSearchCursorPage,
     getSpliceQueryIdentity,
     type BulkSpliceListingSort,
+    type SpliceSearchFilters,
 } from "$lib/shared/store.svelte"
+import {
+    getActiveDownloadSessionTag,
+    releaseDownloadSession,
+    tryClaimDownloadSession,
+} from "$lib/shared/download-session"
 import { toast } from "$lib/shared/toast.svelte"
 import { terminalLog } from "$lib/shared/terminal-log"
 import {
@@ -164,6 +171,7 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
 
 export const bulkDownloadState = $state({
     running: false,
+    stopRequested: false,
     phase: "idle" as "idle" | "listing" | "downloading",
     /** Current batch: queue size while listing, or download total while downloading. */
     total: 0,
@@ -179,6 +187,46 @@ export const bulkDownloadState = $state({
     /** Live adaptive download parallelism (for UI / logs). */
     downloadConcurrency: 50,
 })
+
+export function requestStopBulkDownload() {
+    if (!bulkDownloadState.running) return
+    bulkDownloadState.stopRequested = true
+    toast("Stopping after the current step…", { variant: "info" })
+}
+
+export function beginBulkDownloadJob() {
+    bulkDownloadState.stopRequested = false
+    bulkDownloadState.running = true
+    bulkDownloadState.phase = "listing"
+    bulkDownloadState.total = 0
+    bulkDownloadState.completed = 0
+    bulkDownloadState.failed = 0
+    bulkDownloadState.sessionSaved = 0
+    bulkDownloadState.listingTruncated = false
+    bulkDownloadState.scanned = 0
+    bulkDownloadState.reportedTotal = 0
+    resetBulkDownloadHealth()
+    bulkDownloadState.downloadConcurrency = getBulkDownloadConcurrency()
+}
+
+export function endBulkDownloadJob() {
+    bulkDownloadState.running = false
+    bulkDownloadState.phase = "idle"
+    bulkDownloadState.stopRequested = false
+}
+
+export type SpliceDownloadSearchContext = {
+    filters?: SpliceSearchFilters
+    parentPackUuid?: string | null
+}
+
+export type SpliceDownloadListingResult = {
+    listed: number
+    totalRecords: number
+    sessionFailed: number
+    aborted: boolean
+    listedUuids: Set<string>
+}
 
 function filterMissingFromFlags(
     chunk: SampleAsset[],
@@ -235,13 +283,13 @@ async function runPool<T>(
 
 async function downloadSampleWithRetry(
     asset: SampleAsset,
-    searchIdentity: string,
+    isAborted: () => boolean,
     onSaved: () => void,
     onFailed: () => void
 ): Promise<{ timedOut: boolean }> {
     let timedOut = false
     for (let attempt = 1; attempt <= DOWNLOAD_MAX_ATTEMPTS; attempt++) {
-        if (getSpliceQueryIdentity() !== searchIdentity) {
+        if (isAborted()) {
             return { timedOut }
         }
         try {
@@ -277,7 +325,7 @@ async function downloadSampleWithRetry(
 
 async function downloadBatch(
     batch: SampleAsset[],
-    searchIdentity: string,
+    isAborted: () => boolean,
     onFailed: () => void,
     onSaved: () => void,
     batchIndex: number,
@@ -318,7 +366,7 @@ async function downloadBatch(
                 try {
                     const { timedOut } = await downloadSampleWithRetry(
                         asset,
-                        searchIdentity,
+                        isAborted,
                         onSaved,
                         onFailedTracked
                     )
@@ -393,29 +441,21 @@ async function downloadBatch(
     }
 }
 
-export async function downloadAllSpliceResults() {
-    if (bulkDownloadState.running) return
-    if (browseStore.mode !== "splice") return
-    if (!isSamplesDirValid()) {
-        settingsDialog.open = true
-        return
-    }
+export async function runSpliceDownloadListingSession(options: {
+    listingSort: BulkSpliceListingSort
+    searchContext: SpliceDownloadSearchContext
+    identityForLogs: string
+    shouldAbort: () => boolean
+    listedUuids?: Set<string>
+    batchIndex?: { value: number }
+    onProgress?: () => void
+}): Promise<SpliceDownloadListingResult> {
+    const listingSort = options.listingSort
+    const searchContext = options.searchContext
+    const identityForLogs = options.identityForLogs
+    const listedUuids = options.listedUuids ?? new Set<string>()
+    const batchIndex = options.batchIndex ?? { value: 0 }
 
-    const searchIdentity = getSpliceQueryIdentity()
-    const listingSort = captureBulkSpliceListingSort()
-    bulkDownloadState.running = true
-    bulkDownloadState.phase = "listing"
-    bulkDownloadState.total = 0
-    bulkDownloadState.completed = 0
-    bulkDownloadState.failed = 0
-    bulkDownloadState.sessionSaved = 0
-    bulkDownloadState.listingTruncated = false
-    bulkDownloadState.scanned = 0
-    bulkDownloadState.reportedTotal = 0
-    resetBulkDownloadHealth()
-    bulkDownloadState.downloadConcurrency = getBulkDownloadConcurrency()
-
-    const listedUuids = new Set<string>()
     let cursor: string | null = null
     let paginationDone = false
     let totalRecords = Number.POSITIVE_INFINITY
@@ -425,13 +465,12 @@ export async function downloadAllSpliceResults() {
     let overflowQueue: SampleAsset[] = []
     let sessionFailed = 0
     let warnedNoCursor = false
-    let batchIndex = 0
     const inFlightHolder = { items: [] as InFlightDownload[] }
 
     const debugSnapshot = (): BulkDownloadDebugSnapshot => ({
         listingSort,
-        searchIdentity,
-        batchIndex,
+        searchIdentity: identityForLogs,
+        batchIndex: batchIndex.value,
         batchSize: bulkDownloadState.total,
         cursor,
         paginationDone,
@@ -461,35 +500,22 @@ export async function downloadAllSpliceResults() {
 
     const heartbeat = () => {
         stallMonitor.beat()
+        options.onProgress?.()
     }
 
-    await terminalLog(
-        `bulk-download: started concurrency=${getBulkDownloadConcurrency()} (adaptive ${BULK_DOWNLOAD_CONCURRENCY_MIN}-${BULK_DOWNLOAD_CONCURRENCY_MAX}) slice=${DOWNLOAD_SLICE_SIZE} collectBatch=${BULK_DOWNLOAD_BATCH_SIZE} splicePage=${BULK_DOWNLOAD_SPLICE_PAGE_SIZE}`,
-        "info"
-    )
-    heartbeat()
-
-    const stopProgressLog = createPeriodicProgressLogger(
-        () =>
-            `phase=${bulkDownloadState.phase} batch=${batchIndex} ` +
-            `batchProgress=${bulkDownloadState.completed}/${bulkDownloadState.total} ` +
-            `sessionSaved=${bulkDownloadState.sessionSaved} failed=${bulkDownloadState.failed} ` +
-            `scanned=${bulkDownloadState.scanned}/${bulkDownloadState.reportedTotal} ` +
-            `inFlight=${inFlightHolder.items.length} concurrency=${bulkDownloadState.downloadConcurrency}`,
-        () => bulkDownloadState.running
-    )
-
-    const abortIfSearchChanged = () => {
-        if (getSpliceQueryIdentity() === searchIdentity) return false
-        toast("Bulk download stopped because the search changed.", {
-            variant: "info",
-        })
-        return true
-    }
+    const isAborted = () => options.shouldAbort()
 
     try {
         while (true) {
-            if (abortIfSearchChanged()) return
+            if (isAborted()) {
+                return {
+                    listed,
+                    totalRecords,
+                    sessionFailed,
+                    aborted: true,
+                    listedUuids,
+                }
+            }
 
             const toDownload: SampleAsset[] = [...overflowQueue]
             overflowQueue = []
@@ -501,12 +527,21 @@ export async function downloadAllSpliceResults() {
                 toDownload.length < BULK_DOWNLOAD_BATCH_SIZE &&
                 !paginationDone
             ) {
-                if (abortIfSearchChanged()) return
+                if (isAborted()) {
+                    return {
+                        listed,
+                        totalRecords,
+                        sessionFailed,
+                        aborted: true,
+                        listedUuids,
+                    }
+                }
 
                 const pageResult = await fetchSpliceSearchCursorPage(
                     cursor,
                     BULK_DOWNLOAD_SPLICE_PAGE_SIZE,
-                    listingSort
+                    listingSort,
+                    searchContext
                 )
                 if (!pageResult) {
                     toast(
@@ -570,11 +605,12 @@ export async function downloadAllSpliceResults() {
                 !warnedNoCursor &&
                 cursorPages === 1 &&
                 !sawNextCursor &&
-                totalRecords > listed
+                totalRecords > listed &&
+                !searchContext.parentPackUuid
             ) {
                 warnedNoCursor = true
                 toast(
-                    "Splice did not return a pagination cursor. Deep results may be capped near 10k until pack-based download is added.",
+                    "Splice did not return a pagination cursor. Deep results may be capped near 10k — use Sample pack sync for full packs.",
                     { variant: "warning", durationMs: 14_000 }
                 )
             }
@@ -584,15 +620,15 @@ export async function downloadAllSpliceResults() {
                 continue
             }
 
-            batchIndex++
+            batchIndex.value++
             void terminalLog(
-                `bulk-download: batch ${batchIndex} download ${toDownload.length} items (sessionSaved=${bulkDownloadState.sessionSaved})`,
+                `bulk-download: batch ${batchIndex.value} download ${toDownload.length} items (sessionSaved=${bulkDownloadState.sessionSaved}) identity=${identityForLogs}`,
                 "info"
             )
             heartbeat()
             await downloadBatch(
                 toDownload,
-                searchIdentity,
+                isAborted,
                 () => {
                     sessionFailed++
                     bulkDownloadState.failed++
@@ -601,40 +637,141 @@ export async function downloadAllSpliceResults() {
                     bulkDownloadState.sessionSaved++
                     if (bulkDownloadState.sessionSaved % 500 === 0) {
                         void terminalLog(
-                            `bulk-download: heartbeat saved=${bulkDownloadState.sessionSaved} batch=${batchIndex} ${bulkDownloadState.completed}/${bulkDownloadState.total}`,
+                            `bulk-download: heartbeat saved=${bulkDownloadState.sessionSaved} batch=${batchIndex.value} ${bulkDownloadState.completed}/${bulkDownloadState.total}`,
                             "info"
                         )
                     }
                 },
-                batchIndex,
+                batchIndex.value,
                 inFlightHolder,
                 heartbeat
             )
 
-            if (abortIfSearchChanged()) return
+            if (isAborted()) {
+                return {
+                    listed,
+                    totalRecords,
+                    sessionFailed,
+                    aborted: true,
+                    listedUuids,
+                }
+            }
 
             if (paginationDone && overflowQueue.length === 0) break
         }
 
-        if (listed < totalRecords) {
+        return {
+            listed,
+            totalRecords,
+            sessionFailed,
+            aborted: false,
+            listedUuids,
+        }
+    } finally {
+        stallMonitor.stop()
+    }
+}
+
+export async function downloadAllSpliceResults() {
+    if (bulkDownloadState.running) return
+    if (getActiveDownloadSessionTag() === "pack-sync") {
+        toast("Pack sync is running. Stop it before Download all.", {
+            variant: "info",
+        })
+        return
+    }
+    if (browseStore.mode !== "splice") return
+    if (!isSamplesDirValid()) {
+        settingsDialog.open = true
+        return
+    }
+
+    if (!tryClaimDownloadSession("bulk-download")) {
+        toast("Pack sync is running. Stop it before Download all.", {
+            variant: "info",
+        })
+        return
+    }
+
+    const searchIdentity = getSpliceQueryIdentity()
+    const listingSort = captureBulkSpliceListingSort()
+    beginBulkDownloadJob()
+
+    const listedUuids = new Set<string>()
+    const batchIndex = { value: 0 }
+
+    await terminalLog(
+        `bulk-download: started concurrency=${getBulkDownloadConcurrency()} (adaptive ${BULK_DOWNLOAD_CONCURRENCY_MIN}-${BULK_DOWNLOAD_CONCURRENCY_MAX}) slice=${DOWNLOAD_SLICE_SIZE} collectBatch=${BULK_DOWNLOAD_BATCH_SIZE} splicePage=${BULK_DOWNLOAD_SPLICE_PAGE_SIZE}`,
+        "info"
+    )
+
+    const stopProgressLog = createPeriodicProgressLogger(
+        () =>
+            `phase=${bulkDownloadState.phase} batch=${batchIndex.value} ` +
+            `batchProgress=${bulkDownloadState.completed}/${bulkDownloadState.total} ` +
+            `sessionSaved=${bulkDownloadState.sessionSaved} failed=${bulkDownloadState.failed} ` +
+            `scanned=${bulkDownloadState.scanned}/${bulkDownloadState.reportedTotal} ` +
+            `concurrency=${bulkDownloadState.downloadConcurrency}`,
+        () => bulkDownloadState.running
+    )
+
+    let result: SpliceDownloadListingResult = {
+        listed: 0,
+        totalRecords: 0,
+        sessionFailed: 0,
+        aborted: false,
+        listedUuids,
+    }
+
+    try {
+        result = await runSpliceDownloadListingSession({
+            listingSort,
+            searchContext: { filters: captureSpliceSearchFilters() },
+            identityForLogs: searchIdentity,
+            shouldAbort: () =>
+                bulkDownloadState.stopRequested ||
+                getSpliceQueryIdentity() !== searchIdentity,
+            listedUuids,
+            batchIndex,
+        })
+
+        if (
+            result.aborted &&
+            !bulkDownloadState.stopRequested &&
+            getSpliceQueryIdentity() !== searchIdentity
+        ) {
+            toast("Bulk download stopped because the search changed.", {
+                variant: "info",
+            })
+        }
+
+        if (!result.aborted && result.listed < result.totalRecords) {
             bulkDownloadState.listingTruncated = true
             toast(
-                `Listing stopped early: found ${listed.toLocaleString()} of ${totalRecords.toLocaleString()} reported matches. Downloads only included what was listed.`,
+                `Listing stopped early: found ${result.listed.toLocaleString()} of ${result.totalRecords.toLocaleString()} reported matches. Downloads only included what was listed.`,
                 { variant: "warning", durationMs: 14_000 }
             )
         }
 
-        const saved = bulkDownloadState.sessionSaved
-        if (saved === 0 && sessionFailed === 0) {
+        if (result.aborted && bulkDownloadState.stopRequested) {
             toast(
-                listed < totalRecords
+                `Download stopped. ${bulkDownloadState.sessionSaved.toLocaleString()} sample(s) saved this session.`,
+                { variant: "info" }
+            )
+            return
+        }
+
+        const saved = bulkDownloadState.sessionSaved
+        if (saved === 0 && result.sessionFailed === 0) {
+            toast(
+                result.listed < result.totalRecords
                     ? "Nothing new to download from the listed results."
                     : "All matching samples are already in your library.",
                 { variant: "info" }
             )
-        } else if (sessionFailed > 0) {
+        } else if (result.sessionFailed > 0) {
             toast(
-                `Download finished: ${saved.toLocaleString()} saved, ${sessionFailed.toLocaleString()} failed.`,
+                `Download finished: ${saved.toLocaleString()} saved, ${result.sessionFailed.toLocaleString()} failed.`,
                 { variant: "warning", durationMs: 12_000 }
             )
         } else {
@@ -644,8 +781,7 @@ export async function downloadAllSpliceResults() {
         }
     } finally {
         stopProgressLog()
-        stallMonitor.stop()
-        bulkDownloadState.running = false
-        bulkDownloadState.phase = "idle"
+        endBulkDownloadJob()
+        releaseDownloadSession("bulk-download")
     }
 }

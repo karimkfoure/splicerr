@@ -3,9 +3,12 @@ import type { SampleAsset } from "$lib/splice/types"
 import { fetch } from "@tauri-apps/plugin-http"
 
 export async function fetchDescrambledMp3Bytes(
-    sampleAsset: SampleAsset
+    sampleAsset: SampleAsset,
+    options?: { signal?: AbortSignal }
 ): Promise<Uint8Array> {
-    const response = await fetch(sampleAsset.files[0].url)
+    const response = await fetch(sampleAsset.files[0].url, {
+        signal: options?.signal,
+    })
     const data = new Uint8Array(await response.arrayBuffer())
     return descrambleSample(data)
 }

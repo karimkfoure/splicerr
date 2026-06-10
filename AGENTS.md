@@ -161,6 +161,7 @@ cd src-tauri && cargo test ingest_and_search
 
 ### UI / store
 
+- **Bulk download vs pack sync** — one run at a time ([`download-session.ts`](src/lib/shared/download-session.ts)). Single download engine in [`bulk-download.svelte.ts`](src/lib/shared/bulk-download.svelte.ts) (cursor listing, 5k collect batches, 250-item slices, `runPool`, 30s timeout, inline retry) + [`bulk-download-health`](src/lib/shared/bulk-download-health.ts) adaptive concurrency (25–100, initial 50). **Pack sync** ([`pack-sync.svelte.ts`](src/lib/shared/pack-sync.svelte.ts)) is a FIFO queue only: one pack at a time, each pack calls `runSpliceDownloadListingSession` with browse sort/filters (`captureBulkSpliceListingSort`, `captureSpliceSearchFilters`, optional dialog “match browse tags”) and `parentPackUuid`.
 - `browseStore.mode`: `"splice"` | `"library"`.
 - Tab change: `switchBrowseMode()` (per-tab list cache, scroll reset via `onBrowseModeListReset`); do not hand-roll `resetAssetList()` + `fetchAssets()` on tabs.
 - Sort: reset on tab change via `resetSortForBrowseMode()` (`relevance` / Splice, `ingested_at` / library); `ensure*CompatibleSort()` remains a safety net on fetch.

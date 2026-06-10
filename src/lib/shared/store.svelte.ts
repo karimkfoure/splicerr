@@ -1,10 +1,16 @@
-import { querySplice, SamplesSearch, SamplesSearchCursor } from "$lib/splice/api"
+import {
+    querySplice,
+    PacksSearch,
+    SamplesSearch,
+    SamplesSearchCursor,
+} from "$lib/splice/api"
 import type {
     AssetCategorySlug,
     AssetSortType,
     ChordType,
     Key,
     PackAsset,
+    PacksSearchResponse,
     SampleAsset,
     SamplesSearchResponse,
     SortOrder,
@@ -36,6 +42,10 @@ import {
     syncSampleLibraryFromDisk,
 } from "$lib/shared/files.svelte"
 import { config, isSamplesDirValid, settingsDialog } from "./config.svelte"
+import {
+    buildPackPopularityScopeKey,
+    capturePackRankPage,
+} from "$lib/splice/pack-popularity"
 
 export const DEFAULT_SORT = "relevance"
 export const PER_PAGE = 50
@@ -47,6 +57,7 @@ export const LIBRARY_PER_PAGE = 150
 export const LIBRARY_SORTS = [
     "name",
     "pack_name",
+    "pack_popularity",
     "bpm",
     "duration",
     "ingested_at",
@@ -236,7 +247,11 @@ const SPLICE_ONLY_SORTS = new Set<AssetSortType>([
     "recency",
 ])
 
-const LIBRARY_ONLY_SORTS = new Set<AssetSortType>(["ingested_at", "pack_name"])
+const LIBRARY_ONLY_SORTS = new Set<AssetSortType>([
+    "ingested_at",
+    "pack_name",
+    "pack_popularity",
+])
 
 export function ensureSpliceCompatibleSort() {
     if (LIBRARY_ONLY_SORTS.has(queryStore.sort)) {
@@ -448,6 +463,95 @@ export function getSpliceQueryIdentity() {
     return spliceQueryIdentity()
 }
 
+/** Filters for Splice sample search, frozen for bulk jobs. */
+export type SpliceSearchFilters = {
+    query: string
+    tags: string[]
+    asset_category_slug: AssetCategorySlug | null
+    bpm: string | null
+    min_bpm: number | null
+    max_bpm: number | null
+    key: Key | null
+    chord_type: ChordType | null
+    pack_uuid: string | null
+}
+
+export function captureSpliceSearchFilters(): SpliceSearchFilters {
+    return {
+        query: queryStore.query,
+        tags: [...dataStore.tags],
+        asset_category_slug: queryStore.asset_category_slug,
+        bpm: queryStore.bpm?.toString() ?? null,
+        min_bpm: queryStore.min_bpm,
+        max_bpm: queryStore.max_bpm,
+        key: queryStore.key,
+        chord_type: queryStore.chord_type,
+        pack_uuid: queryStore.pack_uuid,
+    }
+}
+
+function spliceSearchVariables(
+    filters: SpliceSearchFilters,
+    parentPackUuid?: string | null
+) {
+    return {
+        query: filters.query.trim() || null,
+        tags: filters.tags,
+        asset_category_slug: filters.asset_category_slug,
+        bpm: filters.bpm,
+        min_bpm: filters.min_bpm,
+        max_bpm: filters.max_bpm,
+        key: filters.key,
+        chord_type: filters.chord_type,
+        ac_uuid: null as string | null,
+        parent_asset_uuid: parentPackUuid ?? filters.pack_uuid,
+        ...(parentPackUuid != null || filters.pack_uuid
+            ? { parent_asset_type: "pack" as const }
+            : {}),
+    }
+}
+
+const PACKS_LIST_PAGE_SIZE = 50
+
+/** Paginated pack search (popularity sort by default). */
+export async function fetchSplicePacksPage(options: {
+    page: number
+    limit?: number
+    tags: string[]
+    query?: string | null
+    sort?: AssetSortType
+    order?: SortOrder
+}) {
+    const response = await querySplice(PacksSearch, {
+        page: options.page,
+        limit: options.limit ?? PACKS_LIST_PAGE_SIZE,
+        tags: options.tags,
+        query: options.query?.trim() || null,
+        sort: options.sort ?? "popularity",
+        order: options.order ?? "DESC",
+        random_seed: null,
+    })
+    const searchResult = (response as PacksSearchResponse | null)?.data
+        ?.assetsSearch
+    if (!searchResult) return null
+    const limit = options.limit ?? PACKS_LIST_PAGE_SIZE
+    const currentPage = searchResult.pagination_metadata.currentPage
+    if ((options.sort ?? "popularity") === "popularity") {
+        capturePackRankPage(
+            buildPackPopularityScopeKey(options.tags),
+            searchResult.items,
+            currentPage,
+            limit
+        )
+    }
+    return {
+        items: searchResult.items,
+        totalRecords: searchResult.response_metadata.records,
+        currentPage,
+        totalPages: searchResult.pagination_metadata.totalPages,
+    }
+}
+
 /** One Splice search page for the current filters (used by bulk download). */
 export async function fetchSpliceSearchPage(
     page: number,
@@ -493,19 +597,24 @@ export function captureBulkSpliceListingSort(): BulkSpliceListingSort {
 export async function fetchSpliceSearchCursorPage(
     cursor: string | null,
     limit = PER_PAGE,
-    listingSort?: BulkSpliceListingSort
+    listingSort?: BulkSpliceListingSort,
+    searchContext?: {
+        filters?: SpliceSearchFilters
+        /** When set, lists samples inside this pack (overrides pack filter). */
+        parentPackUuid?: string | null
+    }
 ) {
     ensureSpliceCompatibleSort()
     const sort = listingSort?.sort ?? queryStore.sort
     const order = listingSort?.order ?? queryStore.order
     const random_seed =
         listingSort?.random_seed ?? queryStore.random_seed
+    const filters = searchContext?.filters ?? captureSpliceSearchFilters()
     const response = await querySplice(SamplesSearchCursor, {
-        ...queryIdentity,
+        ...spliceSearchVariables(filters, searchContext?.parentPackUuid),
         sort,
         order,
         random_seed,
-        parent_asset_uuid: queryStore.pack_uuid,
         cursor,
         limit,
     })

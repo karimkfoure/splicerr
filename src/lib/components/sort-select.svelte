@@ -26,6 +26,7 @@
 
     const libraryOptions = [
         { value: "ingested_at", label: "Recently added" },
+        { value: "pack_popularity", label: "Pack popularity" },
         { value: "name", label: "Filename" },
         { value: "pack_name", label: "Pack" },
         { value: "duration", label: "Time" },
@@ -37,7 +38,7 @@
         mode === "library" ? [...libraryOptions] : [...spliceOptions]
     )
 
-    const orderedSorts = new Set(
+    const orderedSorts = new Set<string>(
         libraryOptions.map((o) => o.value).filter((v) => v !== "random")
     )
 
@@ -49,7 +50,7 @@
         triggerLabel = label ?? "Sort by..."
         showOrder =
             mode === "library" &&
-            orderedSorts.has(sort as AssetSortType)
+            orderedSorts.has(sort)
     })
 </script>
 

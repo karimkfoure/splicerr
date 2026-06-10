@@ -120,6 +120,7 @@ export type EnsureSampleMp3Options = {
     /** Bulk: skip reading MP3 bytes when the file already exists. */
     skipReadIfCached?: boolean
     quiet?: boolean
+    signal?: AbortSignal
 }
 
 export async function ensureSampleMp3OnDisk(
@@ -141,7 +142,9 @@ export async function ensureSampleMp3OnDisk(
             ? new Uint8Array(0)
             : await readFile(absolutePath)
     } else {
-        bytes = await fetchDescrambledMp3Bytes(sampleAsset)
+        bytes = await fetchDescrambledMp3Bytes(sampleAsset, {
+            signal: options?.signal,
+        })
         await ensureFileDirectoryExists(absolutePath)
         const file = await create(absolutePath)
         await file.write(bytes)

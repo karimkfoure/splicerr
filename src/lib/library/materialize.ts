@@ -30,12 +30,16 @@ export async function materializeSampleInLibrary(sampleAsset: SampleAsset) {
 }
 
 /** Faster path for bulk download: skip waveform, defer pack cover, avoid re-reading cached MP3s. */
-export async function materializeSampleInLibraryBulk(sampleAsset: SampleAsset) {
+export async function materializeSampleInLibraryBulk(
+    sampleAsset: SampleAsset,
+    options?: { signal?: AbortSignal }
+) {
     const result = await ensureSampleMp3OnDisk(sampleAsset, {
         cacheWaveform: false,
         skipPackCover: true,
         skipReadIfCached: true,
         quiet: true,
+        signal: options?.signal,
     })
     await upsertMaterializedSample(sampleAsset, result)
     return result
