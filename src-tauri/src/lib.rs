@@ -136,20 +136,13 @@ fn dev_log(app: tauri::AppHandle, level: String, message: String) -> Result<(), 
     use std::io::Write;
 
     let banner = "══════════════════════════════════════════════════════════════";
-    let stamped = format!(
-        "[{}] [{level}]\n{message}",
-        chrono_lite_timestamp()
-    );
+    let stamped = format!("[{}] [{level}]\n{message}", chrono_lite_timestamp());
     eprintln!("{banner}\n[splicerr]{stamped}\n{banner}");
     let _ = std::io::stderr().flush();
 
     if let Ok(dir) = app.path().app_cache_dir() {
         let path = dir.join("bulk-download-debug.log");
-        if let Ok(mut file) = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)
-        {
+        if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(&path) {
             let _ = writeln!(file, "{stamped}");
             let _ = writeln!(file, "{banner}");
         }
@@ -199,6 +192,7 @@ pub fn run() {
             library::library_open,
             library::library_close,
             library::library_upsert_from_asset,
+            library::library_materialize_batch,
             library::library_batch_flags,
             library::library_set_favorite,
             library::library_search,

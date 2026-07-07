@@ -5,9 +5,10 @@ use rusqlite::{params, Connection, OptionalExtension};
 use schema::migrate;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use tauri::State;
+use tokio::sync::Semaphore;
 
 pub struct LibraryState {
     conn: Mutex<Option<Connection>>,
@@ -31,7 +32,9 @@ where
 }
 
 fn db_path(samples_dir: &str) -> PathBuf {
-    PathBuf::from(samples_dir).join(".splicerr").join("library.db")
+    PathBuf::from(samples_dir)
+        .join(".splicerr")
+        .join("library.db")
 }
 
 /// Match UI key labels (`C`, `F#`, …). Splice often sends lowercase.
@@ -97,6 +100,206 @@ pub fn library_upsert_from_asset(
     with_conn(&state, |conn| ingest::upsert(conn, payload))
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MaterializeBatchItem {
+    pub asset: serde_json::Value,
+    pub relative_audio_path: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MaterializeBatchResult {
+    pub saved: usize,
+    pub already_cached: usize,
+    pub failed: usize,
+    pub failures: Vec<String>,
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn library_materialize_batch(
+    state: State<'_, LibraryState>,
+    samples_dir: String,
+    items: Vec<MaterializeBatchItem>,
+    concurrency: usize,
+) -> Result<MaterializeBatchResult, String> {
+    if items.is_empty() {
+        return Ok(MaterializeBatchResult {
+            saved: 0,
+            already_cached: 0,
+            failed: 0,
+            failures: Vec::new(),
+        });
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let concurrency = concurrency.clamp(1, 32);
+    let limiter = std::sync::Arc::new(Semaphore::new(concurrency));
+    let base = PathBuf::from(samples_dir);
+
+    let mut tasks = tokio::task::JoinSet::new();
+    for item in items {
+        let permit = limiter
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|e| e.to_string())?;
+        let client = client.clone();
+        let base = base.clone();
+        tasks.spawn(async move {
+            let _permit = permit;
+            materialize_one(&client, &base, item).await
+        });
+    }
+
+    let mut saved_payloads = Vec::new();
+    let mut saved = 0;
+    let mut already_cached = 0;
+    let mut failures = Vec::new();
+
+    while let Some(result) = tasks.join_next().await {
+        match result {
+            Ok(Ok(done)) => {
+                if done.wrote_new_audio {
+                    saved += 1;
+                } else {
+                    already_cached += 1;
+                }
+                saved_payloads.push(done.payload);
+            }
+            Ok(Err(e)) => failures.push(e),
+            Err(e) => failures.push(e.to_string()),
+        }
+    }
+
+    if !saved_payloads.is_empty() {
+        with_conn(&state, |conn| {
+            for payload in saved_payloads {
+                ingest::upsert(conn, payload)?;
+            }
+            Ok(())
+        })?;
+    }
+
+    Ok(MaterializeBatchResult {
+        saved,
+        already_cached,
+        failed: failures.len(),
+        failures: failures.into_iter().take(50).collect(),
+    })
+}
+
+struct MaterializedOne {
+    wrote_new_audio: bool,
+    payload: UpsertPayload,
+}
+
+async fn materialize_one(
+    client: &reqwest::Client,
+    samples_dir: &Path,
+    item: MaterializeBatchItem,
+) -> Result<MaterializedOne, String> {
+    let uuid = item
+        .asset
+        .get("uuid")
+        .and_then(|v| v.as_str())
+        .unwrap_or("(missing uuid)")
+        .to_string();
+    let path = samples_dir.join(&item.relative_audio_path);
+    let mut wrote_new_audio = false;
+
+    if !path.exists() {
+        let url = item
+            .asset
+            .get("files")
+            .and_then(|v| v.as_array())
+            .and_then(|files| files.first())
+            .and_then(|file| file.get("url"))
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| format!("{uuid}: missing audio url"))?;
+
+        let response = client
+            .get(url)
+            .send()
+            .await
+            .map_err(|e| format!("{uuid}: download failed: {e}"))?;
+        if !response.status().is_success() {
+            return Err(format!("{uuid}: download HTTP {}", response.status()));
+        }
+        let mut bytes = response
+            .bytes()
+            .await
+            .map_err(|e| format!("{uuid}: reading body failed: {e}"))?
+            .to_vec();
+        descramble_sample(&mut bytes).map_err(|e| format!("{uuid}: {e}"))?;
+        if let Some(parent) = path.parent() {
+            tokio::fs::create_dir_all(parent)
+                .await
+                .map_err(|e| format!("{uuid}: mkdir failed: {e}"))?;
+        }
+        tokio::fs::write(&path, bytes)
+            .await
+            .map_err(|e| format!("{uuid}: write failed: {e}"))?;
+        wrote_new_audio = true;
+    }
+
+    Ok(MaterializedOne {
+        wrote_new_audio,
+        payload: UpsertPayload {
+            asset: item.asset,
+            relative_audio_path: item.relative_audio_path,
+            waveform_relative_path: None,
+            audio_cached_at: chrono_now_ms(),
+            favorite: None,
+        },
+    })
+}
+
+fn descramble_sample(data: &mut Vec<u8>) -> Result<(), String> {
+    if data.len() < 28 {
+        return Err("scrambled sample is too short".into());
+    }
+    let data_size = data[2..10]
+        .iter()
+        .enumerate()
+        .fold(0usize, |acc, (index, byte)| {
+            acc + (*byte as usize) * 256usize.pow(index as u32)
+        });
+    let encoding_block = data[10..28].to_vec();
+    if encoding_block.is_empty() {
+        return Err("missing encoding block".into());
+    }
+
+    let audio_data = &mut data[28..];
+    let pass_index = descramble_pass(0, audio_data, &encoding_block, data_size) + data_size;
+    descramble_pass(
+        pass_index,
+        audio_data,
+        &encoding_block,
+        pass_index + data_size,
+    );
+    data.drain(0..28);
+    Ok(())
+}
+
+fn descramble_pass(
+    mut start_index: usize,
+    data: &mut [u8],
+    encoding_block: &[u8],
+    data_size: usize,
+) -> usize {
+    let mut encoding_index = 0usize;
+    while start_index < data_size && start_index < data.len() {
+        data[start_index] ^= encoding_block[encoding_index];
+        start_index += 1;
+        encoding_index = (encoding_index + 1) % encoding_block.len();
+    }
+    start_index
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LibrarySampleFlags {
@@ -141,7 +344,9 @@ pub fn library_set_pack_listable_total(
     pack_uuid: String,
     total: i64,
 ) -> Result<(), String> {
-    with_conn(&state, |conn| set_pack_listable_total(conn, &pack_uuid, total))
+    with_conn(&state, |conn| {
+        set_pack_listable_total(conn, &pack_uuid, total)
+    })
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -157,17 +362,16 @@ pub fn library_pack_popularity_scores(
     state: State<LibraryState>,
     params: popularity::PackPopularityScoresParams,
 ) -> Result<HashMap<String, popularity::PackPopularityScore>, String> {
-    with_conn(&state, |conn| popularity::pack_popularity_scores(conn, params))
+    with_conn(&state, |conn| {
+        popularity::pack_popularity_scores(conn, params)
+    })
 }
 
 fn pack_cached_counts(
     conn: &Connection,
     pack_uuids: &[String],
 ) -> Result<HashMap<String, i64>, String> {
-    let mut out: HashMap<String, i64> = pack_uuids
-        .iter()
-        .map(|uuid| (uuid.clone(), 0))
-        .collect();
+    let mut out: HashMap<String, i64> = pack_uuids.iter().map(|uuid| (uuid.clone(), 0)).collect();
     if pack_uuids.is_empty() {
         return Ok(out);
     }
@@ -194,17 +398,14 @@ fn pack_mirror_stats(
     pack_uuids: &[String],
 ) -> Result<HashMap<String, PackMirrorStats>, String> {
     let cached = pack_cached_counts(conn, pack_uuids)?;
-    let mut listable: HashMap<String, Option<i64>> = pack_uuids
-        .iter()
-        .map(|u| (u.clone(), None))
-        .collect();
+    let mut listable: HashMap<String, Option<i64>> =
+        pack_uuids.iter().map(|u| (u.clone(), None)).collect();
     if !pack_uuids.is_empty() {
         let placeholders = std::iter::repeat_n("?", pack_uuids.len())
             .collect::<Vec<_>>()
             .join(", ");
-        let sql = format!(
-            "SELECT uuid, listable_sample_total FROM packs WHERE uuid IN ({placeholders})"
-        );
+        let sql =
+            format!("SELECT uuid, listable_sample_total FROM packs WHERE uuid IN ({placeholders})");
         let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
         let mut rows = stmt
             .query(rusqlite::params_from_iter(pack_uuids.iter()))
@@ -229,11 +430,7 @@ fn pack_mirror_stats(
         .collect())
 }
 
-fn set_pack_listable_total(
-    conn: &Connection,
-    pack_uuid: &str,
-    total: i64,
-) -> Result<(), String> {
+fn set_pack_listable_total(conn: &Connection, pack_uuid: &str, total: i64) -> Result<(), String> {
     conn.execute(
         "INSERT INTO packs (uuid, name, listable_sample_total) VALUES (?1, 'Unknown pack', ?2)
          ON CONFLICT(uuid) DO UPDATE SET listable_sample_total = excluded.listable_sample_total",
@@ -580,9 +777,16 @@ mod search {
     use super::*;
     use rusqlite::types::Value;
 
-    pub fn search(conn: &Connection, params: LibrarySearchParams) -> Result<LibrarySearchResponse, String> {
+    pub fn search(
+        conn: &Connection,
+        params: LibrarySearchParams,
+    ) -> Result<LibrarySearchResponse, String> {
         let (where_sql, where_params) = build_filter(&params)?;
-        let total: i64 = query_scalar(conn, &format!("SELECT COUNT(*) FROM samples s WHERE {}", where_sql), &where_params)?;
+        let total: i64 = query_scalar(
+            conn,
+            &format!("SELECT COUNT(*) FROM samples s WHERE {}", where_sql),
+            &where_params,
+        )?;
 
         let order = if params.order.eq_ignore_ascii_case("ASC") {
             "ASC"
@@ -629,7 +833,10 @@ mod search {
         })
     }
 
-    pub fn tag_summary(conn: &Connection, params: LibrarySearchParams) -> Result<Vec<TagSummaryEntry>, String> {
+    pub fn tag_summary(
+        conn: &Connection,
+        params: LibrarySearchParams,
+    ) -> Result<Vec<TagSummaryEntry>, String> {
         let (where_sql, where_params) = build_filter(&params)?;
         let sql = format!(
             "SELECT t.uuid, t.label, COUNT(DISTINCT s.uuid) as cnt
@@ -677,7 +884,12 @@ mod search {
             .map_err(|e| e.to_string())
     }
 
-    fn query_rows<T, F>(conn: &Connection, sql: &str, params: &[Value], f: F) -> Result<Vec<T>, String>
+    fn query_rows<T, F>(
+        conn: &Connection,
+        sql: &str,
+        params: &[Value],
+        f: F,
+    ) -> Result<Vec<T>, String>
     where
         F: FnMut(&rusqlite::Row<'_>) -> rusqlite::Result<T>,
     {
@@ -856,18 +1068,16 @@ mod search {
 
         let audio_abs = PathBuf::from(samples_dir).join(&audio_rel);
         let audio_url = format!("file://{}", audio_abs.display());
-        let waveform_url = waveform_rel.map(|w| {
-            format!(
-                "file://{}",
-                PathBuf::from(samples_dir).join(w).display()
-            )
-        });
-        let cover_url = cover_rel.map(|cover_rel| {
-            format!(
-                "file://{}",
-                PathBuf::from(samples_dir).join(cover_rel).display()
-            )
-        }).unwrap_or_default();
+        let waveform_url = waveform_rel
+            .map(|w| format!("file://{}", PathBuf::from(samples_dir).join(w).display()));
+        let cover_url = cover_rel
+            .map(|cover_rel| {
+                format!(
+                    "file://{}",
+                    PathBuf::from(samples_dir).join(cover_rel).display()
+                )
+            })
+            .unwrap_or_default();
 
         let tags: Vec<serde_json::Value> = conn
             .prepare(

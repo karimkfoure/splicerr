@@ -35,6 +35,26 @@ export async function libraryUpsertFromAsset(payload: UpsertPayload) {
     })
 }
 
+export type MaterializeBatchItem = {
+    asset: SampleAsset
+    relativeAudioPath: string
+}
+
+export type MaterializeBatchResult = {
+    saved: number
+    alreadyCached: number
+    failed: number
+    failures: string[]
+}
+
+export async function libraryMaterializeBatch(params: {
+    samplesDir: string
+    items: MaterializeBatchItem[]
+    concurrency: number
+}) {
+    return invoke<MaterializeBatchResult>("library_materialize_batch", params)
+}
+
 export type LibrarySampleFlags = {
     inLibrary: boolean
     favorite: boolean

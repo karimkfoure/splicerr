@@ -1,12 +1,17 @@
 import type { SampleAsset } from "$lib/splice/types"
-import { libraryBatchFlags } from "$lib/library/api"
-import { materializeSampleInLibraryBulk } from "$lib/library/materialize"
+import { libraryBatchFlags, libraryMaterializeBatch } from "$lib/library/api"
 import {
     getCachedInLibrary,
     mergeBatchFlags,
+    setCachedInLibrary,
 } from "$lib/library/session-cache.svelte"
 import { syncPackCoversForAssets } from "$lib/shared/pack-cover"
-import { isSamplesDirValid, settingsDialog } from "$lib/shared/config.svelte"
+import {
+    config,
+    isSamplesDirValid,
+    settingsDialog,
+} from "$lib/shared/config.svelte"
+import { sampleRelativePath } from "$lib/shared/files.svelte"
 import {
     BULK_DOWNLOAD_SPLICE_PAGE_SIZE,
     browseStore,
@@ -281,10 +286,11 @@ async function runPool<T>(
     await Promise.all(Array.from({ length: n }, runWorker))
 }
 
-async function downloadSampleWithRetry(
-    asset: SampleAsset,
+async function materializeSliceWithRetry(
+    slice: SampleAsset[],
     isAborted: () => boolean,
-    onSaved: () => void,
+    concurrency: number,
+    onSaved: (count: number) => void,
     onFailed: () => void
 ): Promise<{ timedOut: boolean }> {
     let timedOut = false
@@ -293,11 +299,29 @@ async function downloadSampleWithRetry(
             return { timedOut }
         }
         try {
+            if (!config.samples_dir) {
+                throw new Error("Samples directory not set")
+            }
             await withTimeout(
-                materializeSampleInLibraryBulk(asset),
-                DOWNLOAD_TIMEOUT_MS
+                libraryMaterializeBatch({
+                    samplesDir: config.samples_dir,
+                    concurrency,
+                    items: slice.map((asset) => ({
+                        asset,
+                        relativeAudioPath: sampleRelativePath(asset),
+                    })),
+                }).then((result) => {
+                    const ok = result.saved + result.alreadyCached
+                    if (result.failed > 0) {
+                        throw new Error(
+                            `Batch materialize failed for ${result.failed} item(s): ${result.failures.slice(0, 3).join(" | ")}`
+                        )
+                    }
+                    for (const asset of slice) setCachedInLibrary(asset.uuid, true)
+                    onSaved(ok)
+                }),
+                Math.max(DOWNLOAD_TIMEOUT_MS, DOWNLOAD_TIMEOUT_MS * slice.length)
             )
-            onSaved()
             return { timedOut }
         } catch (e) {
             const isTimeout =
@@ -306,18 +330,18 @@ async function downloadSampleWithRetry(
             const detail = e instanceof Error ? e.message : String(e)
             if (attempt < DOWNLOAD_MAX_ATTEMPTS) {
                 void terminalLog(
-                    `bulk-download: retry ${attempt}/${DOWNLOAD_MAX_ATTEMPTS} for ${asset.uuid} (${asset.name}): ${detail}`,
+                    `bulk-download: retry ${attempt}/${DOWNLOAD_MAX_ATTEMPTS} for slice (${slice.length} items): ${detail}`,
                     "warn"
                 )
                 await new Promise((r) => setTimeout(r, 1500 * attempt))
                 continue
             }
-            console.error("Bulk download failed", asset.name, e)
+            console.error("Bulk download slice failed", e)
             void terminalLog(
-                `bulk-download: gave up on ${asset.uuid} (${asset.name}) after ${DOWNLOAD_MAX_ATTEMPTS} attempts: ${detail}`,
+                `bulk-download: gave up on slice (${slice.length} items) after ${DOWNLOAD_MAX_ATTEMPTS} attempts: ${detail}`,
                 "error"
             )
-            onFailed()
+            for (const _asset of slice) onFailed()
         }
     }
     return { timedOut }
@@ -327,7 +351,7 @@ async function downloadBatch(
     batch: SampleAsset[],
     isAborted: () => boolean,
     onFailed: () => void,
-    onSaved: () => void,
+    onSaved: (count: number) => void,
     batchIndex: number,
     inFlightHolder: { items: InFlightDownload[] },
     onHeartbeat: () => void
@@ -356,34 +380,34 @@ async function downloadBatch(
             const sliceStart = Date.now()
             const failuresAtSliceStart = batchFailures
             let sliceTimeouts = 0
-            const sliceWorker = async (asset: SampleAsset) => {
+            const concurrency = getBulkDownloadConcurrency()
+            bulkDownloadState.downloadConcurrency = concurrency
+            for (const asset of slice) {
                 inFlight.set(asset.uuid, {
                     uuid: asset.uuid,
                     name: asset.name,
                     startedAt: Date.now(),
                 })
-                syncInFlight()
-                try {
-                    const { timedOut } = await downloadSampleWithRetry(
-                        asset,
-                        isAborted,
-                        onSaved,
-                        onFailedTracked
-                    )
-                    if (timedOut) {
-                        batchTimeouts++
-                        sliceTimeouts++
-                    }
-                } finally {
-                    inFlight.delete(asset.uuid)
-                    syncInFlight()
-                    bulkDownloadState.completed++
-                    onHeartbeat()
-                }
             }
-            const concurrency = getBulkDownloadConcurrency()
-            bulkDownloadState.downloadConcurrency = concurrency
-            await runPool(slice, concurrency, sliceWorker)
+            syncInFlight()
+            try {
+                const { timedOut } = await materializeSliceWithRetry(
+                    slice,
+                    isAborted,
+                    concurrency,
+                    onSaved,
+                    onFailedTracked
+                )
+                if (timedOut) {
+                    batchTimeouts++
+                    sliceTimeouts++
+                }
+            } finally {
+                inFlight.clear()
+                syncInFlight()
+                bulkDownloadState.completed += slice.length
+                onHeartbeat()
+            }
             const sliceMs = Date.now() - sliceStart
             const adjust = recordBulkDownloadSliceOutcome({
                 items: slice.length,
@@ -633,8 +657,8 @@ export async function runSpliceDownloadListingSession(options: {
                     sessionFailed++
                     bulkDownloadState.failed++
                 },
-                () => {
-                    bulkDownloadState.sessionSaved++
+                (count) => {
+                    bulkDownloadState.sessionSaved += count
                     if (bulkDownloadState.sessionSaved % 500 === 0) {
                         void terminalLog(
                             `bulk-download: heartbeat saved=${bulkDownloadState.sessionSaved} batch=${batchIndex.value} ${bulkDownloadState.completed}/${bulkDownloadState.total}`,

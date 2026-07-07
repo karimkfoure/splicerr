@@ -83,10 +83,8 @@ pub fn migrate(conn: &Connection) -> Result<(), String> {
             .map_err(|e| e.to_string())?;
     }
     if v < 3 {
-        conn.execute_batch(
-            "ALTER TABLE packs ADD COLUMN cover_source_url TEXT;",
-        )
-        .map_err(|e| e.to_string())?;
+        conn.execute_batch("ALTER TABLE packs ADD COLUMN cover_source_url TEXT;")
+            .map_err(|e| e.to_string())?;
         conn.execute("INSERT INTO schema_migrations (version) VALUES (3)", [])
             .map_err(|e| e.to_string())?;
     }
@@ -118,10 +116,8 @@ pub fn migrate(conn: &Connection) -> Result<(), String> {
             .map_err(|e| e.to_string())?;
     }
     if v < 5 {
-        conn.execute_batch(
-            "ALTER TABLE packs ADD COLUMN listable_sample_total INTEGER;",
-        )
-        .map_err(|e| e.to_string())?;
+        conn.execute_batch("ALTER TABLE packs ADD COLUMN listable_sample_total INTEGER;")
+            .map_err(|e| e.to_string())?;
         conn.execute("INSERT INTO schema_migrations (version) VALUES (5)", [])
             .map_err(|e| e.to_string())?;
     }

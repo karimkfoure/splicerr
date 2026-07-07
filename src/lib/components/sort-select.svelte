@@ -38,9 +38,7 @@
         mode === "library" ? [...libraryOptions] : [...spliceOptions]
     )
 
-    const orderedSorts = new Set<string>(
-        libraryOptions.map((o) => o.value).filter((v) => v !== "random")
-    )
+    const orderedSorts = new Set<string>(libraryOptions.map((o) => o.value))
 
     let triggerLabel = $state("")
     let showOrder = $state(false)

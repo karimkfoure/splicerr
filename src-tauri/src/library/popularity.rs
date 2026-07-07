@@ -129,11 +129,7 @@ fn prune_observations(
     Ok(())
 }
 
-fn recompute_pack_score(
-    conn: &Connection,
-    scope_key: &str,
-    pack_uuid: &str,
-) -> Result<(), String> {
+fn recompute_pack_score(conn: &Connection, scope_key: &str, pack_uuid: &str) -> Result<(), String> {
     let now = chrono_now_ms();
     let mut stmt = conn
         .prepare(
@@ -144,7 +140,9 @@ fn recompute_pack_score(
         .map_err(|e| e.to_string())?;
 
     let rows: Vec<(i32, i64)> = stmt
-        .query_map(params![scope_key, pack_uuid], |r| Ok((r.get(0)?, r.get(1)?)))
+        .query_map(params![scope_key, pack_uuid], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
         .map_err(|e| e.to_string())?
         .filter_map(|row| row.ok())
         .collect();
@@ -198,7 +196,7 @@ fn recompute_pack_score(
     )
     .map_err(|e| e.to_string())?;
 
-  // Proxy score to cached samples in this pack (global proxy uses same score for scope)
+    // Proxy score to cached samples in this pack (global proxy uses same score for scope)
     conn.execute(
         "UPDATE samples SET pack_popularity_score = ?1
          WHERE pack_uuid = ?2 AND audio_cached_at > 0",
@@ -227,8 +225,7 @@ pub fn pack_popularity_scores(
              FROM pack_popularity_scores
              WHERE scope_key = ? AND pack_uuid IN ({placeholders})"
         );
-        let mut sql_params: Vec<rusqlite::types::Value> =
-            vec![params.scope_key.clone().into()];
+        let mut sql_params: Vec<rusqlite::types::Value> = vec![params.scope_key.clone().into()];
         sql_params.extend(uuids.iter().map(|u| u.clone().into()));
 
         let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
