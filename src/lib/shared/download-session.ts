@@ -1,6 +1,6 @@
-/** One bulk or pack-sync download run at a time (no shared governor). */
+/** One bulk, pack-sync, or mirror-backfill download run at a time. */
 
-export type DownloadSessionTag = "bulk-download" | "pack-sync"
+export type DownloadSessionTag = "bulk-download" | "pack-sync" | "mirror-backfill"
 
 let activeTag: DownloadSessionTag | null = null
 

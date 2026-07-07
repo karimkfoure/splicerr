@@ -427,8 +427,9 @@ async function ensureRunner() {
         return
     }
 
-    if (getActiveDownloadSessionTag() === "bulk-download") {
-        toast("Download all is running. Stop it before pack sync.", {
+    const activeDownload = getActiveDownloadSessionTag()
+    if (activeDownload === "bulk-download" || activeDownload === "mirror-backfill") {
+        toast("Stop the active download job before pack sync.", {
             variant: "info",
         })
         return
@@ -451,7 +452,7 @@ async function ensureRunner() {
         if (!tryClaimDownloadSession("pack-sync")) {
             runnerPromise = null
             window.clearInterval(progressTimer)
-            toast("Download all is running. Stop it before pack sync.", {
+            toast("Stop the active download job before pack sync.", {
                 variant: "info",
             })
             return

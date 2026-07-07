@@ -203,6 +203,15 @@ pub fn run() {
             library::library_set_pack_listable_total,
             library::library_record_pack_ranks,
             library::library_pack_popularity_scores,
+            library::mirror_start_or_resume,
+            library::mirror_summary,
+            library::mirror_enqueue_packs,
+            library::mirror_claim_next_pack,
+            library::mirror_checkpoint_pack,
+            library::mirror_complete_pack,
+            library::mirror_fail_pack,
+            library::mirror_pause_job,
+            library::mirror_retry_failed,
         ])
         .setup(|app| {
             // Hidden webview parked on the Splice GraphQL host. Navigating here

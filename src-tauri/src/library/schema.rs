@@ -121,5 +121,61 @@ pub fn migrate(conn: &Connection) -> Result<(), String> {
         conn.execute("INSERT INTO schema_migrations (version) VALUES (5)", [])
             .map_err(|e| e.to_string())?;
     }
+    if v < 6 {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS mirror_jobs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                status TEXT NOT NULL,
+                sort TEXT NOT NULL,
+                filters_json TEXT NOT NULL,
+                total_packs INTEGER NOT NULL DEFAULT 0,
+                completed_packs INTEGER NOT NULL DEFAULT 0,
+                failed_packs INTEGER NOT NULL DEFAULT 0,
+                total_samples INTEGER NOT NULL DEFAULT 0,
+                cached_samples INTEGER NOT NULL DEFAULT 0,
+                session_saved INTEGER NOT NULL DEFAULT 0,
+                current_pack_uuid TEXT,
+                last_error TEXT,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_mirror_jobs_status
+                ON mirror_jobs(status, updated_at DESC);
+
+            CREATE TABLE IF NOT EXISTS mirror_pack_queue (
+                job_id INTEGER NOT NULL REFERENCES mirror_jobs(id) ON DELETE CASCADE,
+                pack_uuid TEXT NOT NULL,
+                pack_name TEXT NOT NULL,
+                rank INTEGER NOT NULL,
+                status TEXT NOT NULL,
+                cursor TEXT,
+                listable_total INTEGER,
+                cached_count INTEGER NOT NULL DEFAULT 0,
+                listed_count INTEGER NOT NULL DEFAULT 0,
+                saved_count INTEGER NOT NULL DEFAULT 0,
+                failed_count INTEGER NOT NULL DEFAULT 0,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY (job_id, pack_uuid)
+            );
+            CREATE INDEX IF NOT EXISTS idx_mirror_pack_queue_status_rank
+                ON mirror_pack_queue(job_id, status, rank);
+
+            CREATE TABLE IF NOT EXISTS mirror_failures (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                job_id INTEGER NOT NULL,
+                pack_uuid TEXT,
+                sample_uuid TEXT,
+                error TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_mirror_failures_job_pack
+                ON mirror_failures(job_id, pack_uuid, created_at DESC);",
+        )
+        .map_err(|e| e.to_string())?;
+        conn.execute("INSERT INTO schema_migrations (version) VALUES (6)", [])
+            .map_err(|e| e.to_string())?;
+    }
     Ok(())
 }

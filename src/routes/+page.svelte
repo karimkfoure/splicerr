@@ -11,6 +11,7 @@
     import Download from "lucide-svelte/icons/download"
     import LoaderCircle from "lucide-svelte/icons/loader-circle"
     import Package from "lucide-svelte/icons/package"
+    import Database from "lucide-svelte/icons/database"
     import Button from "$lib/components/ui/button/button.svelte"
     import ProgressLoading from "$lib/components/progress-loading.svelte"
     import Separator from "$lib/components/ui/separator/separator.svelte"
@@ -41,6 +42,7 @@
     import KeySelect from "$lib/components/key-select.svelte"
     import PackSelect from "$lib/components/pack-select.svelte"
     import SamplePackSyncDialog from "$lib/components/sample-pack-sync-dialog.svelte"
+    import MirrorBackfillDialog from "$lib/components/mirror-backfill-dialog.svelte"
     import {
         bulkDownloadState,
         downloadAllSpliceResults,
@@ -48,6 +50,7 @@
     } from "$lib/shared/bulk-download.svelte"
     import { getActiveDownloadSessionTag } from "$lib/shared/download-session"
     import { packSyncManager } from "$lib/shared/pack-sync.svelte"
+    import { mirrorBackfillState } from "$lib/shared/mirror-backfill.svelte"
     import { toast } from "$lib/shared/toast.svelte"
 
     // TODO: Taxonomy comboboxes (maybe just pass all tags to each)
@@ -91,6 +94,7 @@
     let expandTags = $state(false)
     let bulkDownloadConfirmOpen = $state(false)
     let samplePackSyncOpen = $state(false)
+    let mirrorBackfillOpen = $state(false)
 
     let viewportRef = $state<HTMLElement>(null!)
     let tagsContainerRef = $state<HTMLElement>(null!)
@@ -364,9 +368,28 @@
                     variant="outline"
                     size="icon"
                     class="h-9 w-9 shrink-0"
+                    title="Local mirror backfill"
+                    disabled={(bulkDownloadState.running &&
+                        !mirrorBackfillState.running) ||
+                        packSyncManager.active}
+                    onclick={() => {
+                        mirrorBackfillOpen = true
+                    }}
+                >
+                    {#if mirrorBackfillState.running}
+                        <LoaderCircle class="size-4 animate-spin" />
+                    {:else}
+                        <Database class="size-4" />
+                    {/if}
+                </Button>
+                <Button
+                    variant="outline"
+                    size="icon"
+                    class="h-9 w-9 shrink-0"
                     title="Sample pack sync"
                     disabled={bulkDownloadState.running &&
-                        !packSyncManager.active}
+                        !packSyncManager.active ||
+                        mirrorBackfillState.running}
                     onclick={() => {
                         samplePackSyncOpen = true
                     }}
@@ -381,6 +404,7 @@
                         ? false
                         : dataStore.total_records === 0 ||
                           packSyncManager.active ||
+                          mirrorBackfillState.running ||
                           getActiveDownloadSessionTag() === "pack-sync"}
                     onclick={() => {
                         if (
@@ -395,6 +419,12 @@
                             getActiveDownloadSessionTag() === "pack-sync"
                         ) {
                             toast("Stop pack sync before Download all.", {
+                                variant: "info",
+                            })
+                            return
+                        }
+                        if (mirrorBackfillState.running) {
+                            toast("Pause mirror backfill before Download all.", {
                                 variant: "info",
                             })
                             return
@@ -595,6 +625,7 @@
     <AudioPlayer onprev={gotoPrev} onnext={gotoNext} />
 
     <SamplePackSyncDialog bind:open={samplePackSyncOpen} />
+    <MirrorBackfillDialog bind:open={mirrorBackfillOpen} />
 
     <Dialog.Root bind:open={bulkDownloadConfirmOpen}>
         <Dialog.Content>

@@ -193,6 +193,106 @@ export async function libraryPackPopularityScores(
     )
 }
 
+export type MirrorSummary = {
+    jobId: number | null
+    status: "idle" | "running" | "paused" | "complete"
+    totalPacks: number
+    queuedPacks: number
+    runningPacks: number
+    completedPacks: number
+    failedPacks: number
+    totalSamples: number
+    cachedSamples: number
+    sessionSaved: number
+    currentPackUuid: string | null
+    currentPackName: string | null
+    lastError: string | null
+    updatedAt: number | null
+}
+
+export type MirrorPackRow = {
+    jobId: number
+    packUuid: string
+    packName: string
+    rank: number
+    status: string
+    cursor: string | null
+    listableTotal: number | null
+    cachedCount: number
+    listedCount: number
+    savedCount: number
+    failedCount: number
+    attempts: number
+    lastError: string | null
+}
+
+export type MirrorPackInput = {
+    uuid: string
+    name: string
+    rank: number
+    listableTotal?: number | null
+}
+
+export async function mirrorStartOrResume(params: {
+    filtersJson: string
+    sort: string
+}) {
+    return invoke<MirrorSummary>("mirror_start_or_resume", { params })
+}
+
+export async function mirrorSummary() {
+    return invoke<MirrorSummary>("mirror_summary")
+}
+
+export async function mirrorEnqueuePacks(
+    jobId: number,
+    packs: MirrorPackInput[]
+) {
+    return invoke<MirrorSummary>("mirror_enqueue_packs", { jobId, packs })
+}
+
+export async function mirrorClaimNextPack(jobId: number) {
+    return invoke<MirrorPackRow | null>("mirror_claim_next_pack", { jobId })
+}
+
+export async function mirrorCheckpointPack(params: {
+    jobId: number
+    packUuid: string
+    cursor?: string | null
+    listableTotal?: number | null
+    listedDelta: number
+    savedDelta: number
+    failedDelta: number
+}) {
+    return invoke<MirrorSummary>("mirror_checkpoint_pack", { params })
+}
+
+export async function mirrorCompletePack(params: {
+    jobId: number
+    packUuid: string
+    listableTotal?: number | null
+    error?: string | null
+}) {
+    return invoke<MirrorSummary>("mirror_complete_pack", { params })
+}
+
+export async function mirrorFailPack(params: {
+    jobId: number
+    packUuid: string
+    listableTotal?: number | null
+    error?: string | null
+}) {
+    return invoke<MirrorSummary>("mirror_fail_pack", { params })
+}
+
+export async function mirrorPauseJob(jobId: number) {
+    return invoke<MirrorSummary>("mirror_pause_job", { jobId })
+}
+
+export async function mirrorRetryFailed(jobId: number) {
+    return invoke<MirrorSummary>("mirror_retry_failed", { jobId })
+}
+
 export type LibrarySearchResponse = {
     items: SampleAsset[]
     totalRecords: number

@@ -157,12 +157,13 @@ Only when they assert real behavior or the user asks (`ingest_and_search` in Rus
 pnpm dev          # Vite + Tauri dev
 pnpm check        # svelte-check
 cd src-tauri && cargo test ingest_and_search
+cd src-tauri && cargo test mirror
 ```
 
 ### UI / store
 
 - **Bulk download vs pack sync** — one run at a time ([`download-session.ts`](src/lib/shared/download-session.ts)). Single listing engine in [`bulk-download.svelte.ts`](src/lib/shared/bulk-download.svelte.ts) (cursor listing, 5k collect batches, 250-item slices, Rust batch materialization, inline retry) + [`bulk-download-health`](src/lib/shared/bulk-download-health.ts) adaptive concurrency. **Pack sync** ([`pack-sync.svelte.ts`](src/lib/shared/pack-sync.svelte.ts)) is a FIFO queue only: one pack at a time, each pack calls `runSpliceDownloadListingSession` with browse sort/filters (`captureBulkSpliceListingSort`, `captureSpliceSearchFilters`, optional dialog “match browse tags”) and `parentPackUuid`.
-- **Mass mirror/backfill** — GraphQL listing must still go through the hidden Splice-origin webview (`splice_graphql`); native HTTP clients are blocked by Cloudflare. Keep UI work limited to listing and progress. Heavy audio materialization should use the Rust batch command (`library_materialize_batch`): it downloads scrambled MP3s, descrambles, writes files, and upserts SQLite rows with bounded backend concurrency.
+- **Mass mirror/backfill** — GraphQL listing must still go through the hidden Splice-origin webview (`splice_graphql`); native HTTP clients are blocked by Cloudflare. The resumable mirror lives in [`mirror-backfill.svelte.ts`](src/lib/shared/mirror-backfill.svelte.ts): first persist the pack catalog by popularity, then process one pack at a time with SQLite checkpoints (`mirror_jobs`, `mirror_pack_queue`, `mirror_failures`). Heavy audio materialization should use the Rust batch command (`library_materialize_batch`): it downloads scrambled MP3s, descrambles, writes files, and upserts SQLite rows with bounded backend concurrency. Existing cached samples count as progress; do not wipe by default.
 - `browseStore.mode`: `"splice"` | `"library"`.
 - Tab change: `switchBrowseMode()` (per-tab list cache, scroll reset via `onBrowseModeListReset`); do not hand-roll `resetAssetList()` + `fetchAssets()` on tabs.
 - Sort: reset on tab change via `resetSortForBrowseMode()` (`relevance` / Splice, `ingested_at` / library); `ensure*CompatibleSort()` remains a safety net on fetch.

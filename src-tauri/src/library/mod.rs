@@ -367,6 +367,147 @@ pub fn library_pack_popularity_scores(
     })
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MirrorStartParams {
+    pub filters_json: String,
+    pub sort: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MirrorPackInput {
+    pub uuid: String,
+    pub name: String,
+    pub rank: i64,
+    pub listable_total: Option<i64>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct MirrorPackRow {
+    pub job_id: i64,
+    pub pack_uuid: String,
+    pub pack_name: String,
+    pub rank: i64,
+    pub status: String,
+    pub cursor: Option<String>,
+    pub listable_total: Option<i64>,
+    pub cached_count: i64,
+    pub listed_count: i64,
+    pub saved_count: i64,
+    pub failed_count: i64,
+    pub attempts: i64,
+    pub last_error: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MirrorSummary {
+    pub job_id: Option<i64>,
+    pub status: String,
+    pub total_packs: i64,
+    pub queued_packs: i64,
+    pub running_packs: i64,
+    pub completed_packs: i64,
+    pub failed_packs: i64,
+    pub total_samples: i64,
+    pub cached_samples: i64,
+    pub session_saved: i64,
+    pub current_pack_uuid: Option<String>,
+    pub current_pack_name: Option<String>,
+    pub last_error: Option<String>,
+    pub updated_at: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MirrorCheckpointParams {
+    pub job_id: i64,
+    pub pack_uuid: String,
+    pub cursor: Option<String>,
+    pub listable_total: Option<i64>,
+    pub listed_delta: i64,
+    pub saved_delta: i64,
+    pub failed_delta: i64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MirrorPackFinishParams {
+    pub job_id: i64,
+    pub pack_uuid: String,
+    pub listable_total: Option<i64>,
+    pub error: Option<String>,
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub fn mirror_start_or_resume(
+    state: State<LibraryState>,
+    params: MirrorStartParams,
+) -> Result<MirrorSummary, String> {
+    with_conn(&state, |conn| mirror::start_or_resume(conn, params))
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub fn mirror_summary(state: State<LibraryState>) -> Result<MirrorSummary, String> {
+    with_conn(&state, mirror::summary)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub fn mirror_enqueue_packs(
+    state: State<LibraryState>,
+    job_id: i64,
+    packs: Vec<MirrorPackInput>,
+) -> Result<MirrorSummary, String> {
+    with_conn(&state, |conn| mirror::enqueue_packs(conn, job_id, packs))
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub fn mirror_claim_next_pack(
+    state: State<LibraryState>,
+    job_id: i64,
+) -> Result<Option<MirrorPackRow>, String> {
+    with_conn(&state, |conn| mirror::claim_next_pack(conn, job_id))
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub fn mirror_checkpoint_pack(
+    state: State<LibraryState>,
+    params: MirrorCheckpointParams,
+) -> Result<MirrorSummary, String> {
+    with_conn(&state, |conn| mirror::checkpoint_pack(conn, params))
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub fn mirror_complete_pack(
+    state: State<LibraryState>,
+    params: MirrorPackFinishParams,
+) -> Result<MirrorSummary, String> {
+    with_conn(&state, |conn| mirror::complete_pack(conn, params))
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub fn mirror_fail_pack(
+    state: State<LibraryState>,
+    params: MirrorPackFinishParams,
+) -> Result<MirrorSummary, String> {
+    with_conn(&state, |conn| mirror::fail_pack(conn, params))
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub fn mirror_pause_job(state: State<LibraryState>, job_id: i64) -> Result<MirrorSummary, String> {
+    with_conn(&state, |conn| mirror::pause_job(conn, job_id))
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub fn mirror_retry_failed(
+    state: State<LibraryState>,
+    job_id: i64,
+) -> Result<MirrorSummary, String> {
+    with_conn(&state, |conn| mirror::retry_failed(conn, job_id))
+}
+
 fn pack_cached_counts(
     conn: &Connection,
     pack_uuids: &[String],
@@ -1132,6 +1273,505 @@ mod search {
     }
 }
 
+mod mirror {
+    use super::*;
+
+    pub fn start_or_resume(
+        conn: &Connection,
+        params: MirrorStartParams,
+    ) -> Result<MirrorSummary, String> {
+        let now = chrono_now_ms();
+        let job_id = if let Some(id) = active_job_id(conn)? {
+            conn.execute(
+                "UPDATE mirror_jobs
+                 SET status = 'running', sort = ?1, filters_json = ?2,
+                     last_error = NULL, updated_at = ?3
+                 WHERE id = ?4",
+                params![params.sort, params.filters_json, now, id],
+            )
+            .map_err(|e| e.to_string())?;
+            id
+        } else {
+            conn.execute(
+                "INSERT INTO mirror_jobs
+                    (status, sort, filters_json, created_at, updated_at)
+                 VALUES ('running', ?1, ?2, ?3, ?3)",
+                params![params.sort, params.filters_json, now],
+            )
+            .map_err(|e| e.to_string())?;
+            conn.last_insert_rowid()
+        };
+        recompute_job_counts(conn, job_id)?;
+        summary_for_job(conn, Some(job_id))
+    }
+
+    pub fn summary(conn: &Connection) -> Result<MirrorSummary, String> {
+        summary_for_job(conn, latest_job_id(conn)?)
+    }
+
+    pub fn enqueue_packs(
+        conn: &Connection,
+        job_id: i64,
+        packs: Vec<MirrorPackInput>,
+    ) -> Result<MirrorSummary, String> {
+        let now = chrono_now_ms();
+        let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+        for pack in packs {
+            let cached = cached_count(&tx, &pack.uuid)?;
+            let status = if pack
+                .listable_total
+                .map(|total| total > 0 && cached >= total)
+                .unwrap_or(false)
+            {
+                "complete"
+            } else {
+                "queued"
+            };
+            tx.execute(
+                "INSERT INTO packs (uuid, name, listable_sample_total)
+                 VALUES (?1, ?2, ?3)
+                 ON CONFLICT(uuid) DO UPDATE SET
+                    name = CASE WHEN excluded.name != 'Unknown pack'
+                        THEN excluded.name ELSE packs.name END,
+                    listable_sample_total = COALESCE(
+                        excluded.listable_sample_total,
+                        packs.listable_sample_total
+                    )",
+                params![pack.uuid, pack.name, pack.listable_total],
+            )
+            .map_err(|e| e.to_string())?;
+            tx.execute(
+                "INSERT INTO mirror_pack_queue
+                    (job_id, pack_uuid, pack_name, rank, status,
+                     listable_total, cached_count, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                 ON CONFLICT(job_id, pack_uuid) DO UPDATE SET
+                    pack_name = excluded.pack_name,
+                    rank = MIN(mirror_pack_queue.rank, excluded.rank),
+                    listable_total = COALESCE(
+                        excluded.listable_total,
+                        mirror_pack_queue.listable_total
+                    ),
+                    cached_count = excluded.cached_count,
+                    status = CASE
+                        WHEN mirror_pack_queue.status = 'complete' THEN 'complete'
+                        WHEN excluded.status = 'complete' THEN 'complete'
+                        ELSE mirror_pack_queue.status
+                    END,
+                    updated_at = excluded.updated_at",
+                params![
+                    job_id,
+                    pack.uuid,
+                    pack.name,
+                    pack.rank,
+                    status,
+                    pack.listable_total,
+                    cached,
+                    now
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        tx.commit().map_err(|e| e.to_string())?;
+        recompute_job_counts(conn, job_id)?;
+        summary_for_job(conn, Some(job_id))
+    }
+
+    pub fn claim_next_pack(
+        conn: &Connection,
+        job_id: i64,
+    ) -> Result<Option<MirrorPackRow>, String> {
+        let row = conn
+            .query_row(
+                "SELECT job_id, pack_uuid, pack_name, rank, status, cursor,
+                    listable_total, cached_count, listed_count, saved_count,
+                    failed_count, attempts, last_error
+                 FROM mirror_pack_queue
+                 WHERE job_id = ?1 AND status IN ('queued', 'paused')
+                 ORDER BY rank ASC
+                 LIMIT 1",
+                params![job_id],
+                row_from_sql,
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let now = chrono_now_ms();
+        let cached = cached_count(conn, &row.pack_uuid)?;
+        conn.execute(
+            "UPDATE mirror_pack_queue
+             SET status = 'listing', attempts = attempts + 1,
+                 cached_count = ?1, last_error = NULL, updated_at = ?2
+             WHERE job_id = ?3 AND pack_uuid = ?4",
+            params![cached, now, job_id, row.pack_uuid],
+        )
+        .map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE mirror_jobs
+             SET status = 'running', current_pack_uuid = ?1,
+                 last_error = NULL, updated_at = ?2
+             WHERE id = ?3",
+            params![row.pack_uuid, now, job_id],
+        )
+        .map_err(|e| e.to_string())?;
+        queue_row(conn, job_id, &row.pack_uuid).map(Some)
+    }
+
+    pub fn checkpoint_pack(
+        conn: &Connection,
+        params: MirrorCheckpointParams,
+    ) -> Result<MirrorSummary, String> {
+        let now = chrono_now_ms();
+        let cached = cached_count(conn, &params.pack_uuid)?;
+        conn.execute(
+            "UPDATE mirror_pack_queue
+             SET status = 'downloading',
+                 cursor = COALESCE(?1, cursor),
+                 listable_total = COALESCE(?2, listable_total),
+                 cached_count = ?3,
+                 listed_count = listed_count + ?4,
+                 saved_count = saved_count + ?5,
+                 failed_count = failed_count + ?6,
+                 updated_at = ?7
+             WHERE job_id = ?8 AND pack_uuid = ?9",
+            params![
+                params.cursor,
+                params.listable_total,
+                cached,
+                params.listed_delta.max(0),
+                params.saved_delta.max(0),
+                params.failed_delta.max(0),
+                now,
+                params.job_id,
+                params.pack_uuid
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE mirror_jobs
+             SET session_saved = session_saved + ?1, updated_at = ?2
+             WHERE id = ?3",
+            params![params.saved_delta.max(0), now, params.job_id],
+        )
+        .map_err(|e| e.to_string())?;
+        recompute_job_counts(conn, params.job_id)?;
+        summary_for_job(conn, Some(params.job_id))
+    }
+
+    pub fn complete_pack(
+        conn: &Connection,
+        params: MirrorPackFinishParams,
+    ) -> Result<MirrorSummary, String> {
+        let now = chrono_now_ms();
+        let cached = cached_count(conn, &params.pack_uuid)?;
+        conn.execute(
+            "UPDATE mirror_pack_queue
+             SET status = 'complete', cursor = NULL,
+                 listable_total = COALESCE(?1, listable_total),
+                 cached_count = ?2, last_error = NULL, updated_at = ?3
+             WHERE job_id = ?4 AND pack_uuid = ?5",
+            params![
+                params.listable_total,
+                cached,
+                now,
+                params.job_id,
+                params.pack_uuid
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+        if let Some(total) = params.listable_total {
+            super::set_pack_listable_total(conn, &params.pack_uuid, total)?;
+        }
+        conn.execute(
+            "UPDATE mirror_jobs
+             SET current_pack_uuid = NULL, last_error = NULL, updated_at = ?1
+             WHERE id = ?2",
+            params![now, params.job_id],
+        )
+        .map_err(|e| e.to_string())?;
+        recompute_job_counts(conn, params.job_id)?;
+        maybe_finish_job(conn, params.job_id)?;
+        summary_for_job(conn, Some(params.job_id))
+    }
+
+    pub fn fail_pack(
+        conn: &Connection,
+        params: MirrorPackFinishParams,
+    ) -> Result<MirrorSummary, String> {
+        let now = chrono_now_ms();
+        let error = params.error.unwrap_or_else(|| "Pack failed".to_string());
+        conn.execute(
+            "UPDATE mirror_pack_queue
+             SET status = 'failed', last_error = ?1, updated_at = ?2
+             WHERE job_id = ?3 AND pack_uuid = ?4",
+            params![error, now, params.job_id, params.pack_uuid],
+        )
+        .map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT INTO mirror_failures (job_id, pack_uuid, error, created_at)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![params.job_id, params.pack_uuid, error, now],
+        )
+        .map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE mirror_jobs
+             SET current_pack_uuid = NULL, last_error = ?1, updated_at = ?2
+             WHERE id = ?3",
+            params![error, now, params.job_id],
+        )
+        .map_err(|e| e.to_string())?;
+        recompute_job_counts(conn, params.job_id)?;
+        summary_for_job(conn, Some(params.job_id))
+    }
+
+    pub fn pause_job(conn: &Connection, job_id: i64) -> Result<MirrorSummary, String> {
+        let now = chrono_now_ms();
+        conn.execute(
+            "UPDATE mirror_pack_queue
+             SET status = 'paused', updated_at = ?1
+             WHERE job_id = ?2 AND status IN ('listing', 'downloading')",
+            params![now, job_id],
+        )
+        .map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE mirror_jobs
+             SET status = 'paused', current_pack_uuid = NULL, updated_at = ?1
+             WHERE id = ?2",
+            params![now, job_id],
+        )
+        .map_err(|e| e.to_string())?;
+        recompute_job_counts(conn, job_id)?;
+        summary_for_job(conn, Some(job_id))
+    }
+
+    pub fn retry_failed(conn: &Connection, job_id: i64) -> Result<MirrorSummary, String> {
+        let now = chrono_now_ms();
+        conn.execute(
+            "UPDATE mirror_pack_queue
+             SET status = 'queued', last_error = NULL, updated_at = ?1
+             WHERE job_id = ?2 AND status = 'failed'",
+            params![now, job_id],
+        )
+        .map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE mirror_jobs
+             SET status = 'running', last_error = NULL, updated_at = ?1
+             WHERE id = ?2",
+            params![now, job_id],
+        )
+        .map_err(|e| e.to_string())?;
+        recompute_job_counts(conn, job_id)?;
+        summary_for_job(conn, Some(job_id))
+    }
+
+    fn active_job_id(conn: &Connection) -> Result<Option<i64>, String> {
+        conn.query_row(
+            "SELECT id FROM mirror_jobs
+             WHERE status IN ('running', 'paused', 'idle')
+             ORDER BY updated_at DESC
+             LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())
+    }
+
+    fn latest_job_id(conn: &Connection) -> Result<Option<i64>, String> {
+        conn.query_row(
+            "SELECT id FROM mirror_jobs ORDER BY updated_at DESC LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())
+    }
+
+    fn cached_count(conn: &Connection, pack_uuid: &str) -> Result<i64, String> {
+        conn.query_row(
+            "SELECT COUNT(*) FROM samples
+             WHERE pack_uuid = ?1 AND audio_cached_at > 0",
+            params![pack_uuid],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())
+    }
+
+    fn row_from_sql(row: &rusqlite::Row<'_>) -> rusqlite::Result<MirrorPackRow> {
+        Ok(MirrorPackRow {
+            job_id: row.get(0)?,
+            pack_uuid: row.get(1)?,
+            pack_name: row.get(2)?,
+            rank: row.get(3)?,
+            status: row.get(4)?,
+            cursor: row.get(5)?,
+            listable_total: row.get(6)?,
+            cached_count: row.get(7)?,
+            listed_count: row.get(8)?,
+            saved_count: row.get(9)?,
+            failed_count: row.get(10)?,
+            attempts: row.get(11)?,
+            last_error: row.get(12)?,
+        })
+    }
+
+    fn queue_row(conn: &Connection, job_id: i64, pack_uuid: &str) -> Result<MirrorPackRow, String> {
+        conn.query_row(
+            "SELECT job_id, pack_uuid, pack_name, rank, status, cursor,
+                listable_total, cached_count, listed_count, saved_count,
+                failed_count, attempts, last_error
+             FROM mirror_pack_queue
+             WHERE job_id = ?1 AND pack_uuid = ?2",
+            params![job_id, pack_uuid],
+            row_from_sql,
+        )
+        .map_err(|e| e.to_string())
+    }
+
+    fn recompute_job_counts(conn: &Connection, job_id: i64) -> Result<(), String> {
+        let now = chrono_now_ms();
+        conn.execute(
+            "UPDATE mirror_jobs
+             SET
+                total_packs = (
+                    SELECT COUNT(*) FROM mirror_pack_queue WHERE job_id = ?1
+                ),
+                completed_packs = (
+                    SELECT COUNT(*) FROM mirror_pack_queue
+                    WHERE job_id = ?1 AND status = 'complete'
+                ),
+                failed_packs = (
+                    SELECT COUNT(*) FROM mirror_pack_queue
+                    WHERE job_id = ?1 AND status = 'failed'
+                ),
+                total_samples = COALESCE((
+                    SELECT SUM(COALESCE(listable_total, 0))
+                    FROM mirror_pack_queue WHERE job_id = ?1
+                ), 0),
+                cached_samples = COALESCE((
+                    SELECT SUM(cached_count)
+                    FROM mirror_pack_queue WHERE job_id = ?1
+                ), 0),
+                updated_at = ?2
+             WHERE id = ?1",
+            params![job_id, now],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    fn maybe_finish_job(conn: &Connection, job_id: i64) -> Result<(), String> {
+        let remaining: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM mirror_pack_queue
+                 WHERE job_id = ?1 AND status IN ('queued', 'listing', 'downloading', 'paused')",
+                params![job_id],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        if remaining == 0 {
+            let failed: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM mirror_pack_queue
+                     WHERE job_id = ?1 AND status = 'failed'",
+                    params![job_id],
+                    |r| r.get(0),
+                )
+                .map_err(|e| e.to_string())?;
+            let status = if failed > 0 { "idle" } else { "complete" };
+            conn.execute(
+                "UPDATE mirror_jobs SET status = ?1, updated_at = ?2 WHERE id = ?3",
+                params![status, chrono_now_ms(), job_id],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
+    fn summary_for_job(conn: &Connection, job_id: Option<i64>) -> Result<MirrorSummary, String> {
+        let Some(job_id) = job_id else {
+            return Ok(MirrorSummary {
+                job_id: None,
+                status: "idle".into(),
+                total_packs: 0,
+                queued_packs: 0,
+                running_packs: 0,
+                completed_packs: 0,
+                failed_packs: 0,
+                total_samples: 0,
+                cached_samples: 0,
+                session_saved: 0,
+                current_pack_uuid: None,
+                current_pack_name: None,
+                last_error: None,
+                updated_at: None,
+            });
+        };
+
+        let mut summary = conn
+            .query_row(
+                "SELECT id, status, total_packs, completed_packs, failed_packs,
+                    total_samples, cached_samples, session_saved,
+                    current_pack_uuid, last_error, updated_at
+                 FROM mirror_jobs WHERE id = ?1",
+                params![job_id],
+                |r| {
+                    Ok(MirrorSummary {
+                        job_id: Some(r.get(0)?),
+                        status: r.get(1)?,
+                        total_packs: r.get(2)?,
+                        queued_packs: 0,
+                        running_packs: 0,
+                        completed_packs: r.get(3)?,
+                        failed_packs: r.get(4)?,
+                        total_samples: r.get(5)?,
+                        cached_samples: r.get(6)?,
+                        session_saved: r.get(7)?,
+                        current_pack_uuid: r.get(8)?,
+                        current_pack_name: None,
+                        last_error: r.get(9)?,
+                        updated_at: Some(r.get(10)?),
+                    })
+                },
+            )
+            .map_err(|e| e.to_string())?;
+
+        summary.queued_packs = count_status(conn, job_id, &["queued", "paused"])?;
+        summary.running_packs = count_status(conn, job_id, &["listing", "downloading"])?;
+        if let Some(ref uuid) = summary.current_pack_uuid {
+            summary.current_pack_name = conn
+                .query_row(
+                    "SELECT pack_name FROM mirror_pack_queue
+                     WHERE job_id = ?1 AND pack_uuid = ?2",
+                    params![job_id, uuid],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(summary)
+    }
+
+    fn count_status(conn: &Connection, job_id: i64, statuses: &[&str]) -> Result<i64, String> {
+        if statuses.is_empty() {
+            return Ok(0);
+        }
+        let placeholders = statuses.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+        let sql = format!(
+            "SELECT COUNT(*) FROM mirror_pack_queue
+             WHERE job_id = ? AND status IN ({placeholders})"
+        );
+        let mut values: Vec<rusqlite::types::Value> = vec![job_id.into()];
+        values.extend(statuses.iter().map(|s| (*s).to_string().into()));
+        let refs: Vec<&dyn rusqlite::ToSql> =
+            values.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
+        conn.query_row(&sql, refs.as_slice(), |r| r.get(0))
+            .map_err(|e| e.to_string())
+    }
+}
+
 fn chrono_now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1143,8 +1783,7 @@ fn chrono_now_ms() -> i64 {
 mod tests {
     use super::*;
 
-    #[test]
-    fn ingest_and_search() {
+    fn test_conn() -> (tempfile::TempDir, Connection) {
         let dir = tempfile::tempdir().unwrap();
         let path = db_path(dir.path().to_str().unwrap());
         if let Some(parent) = path.parent() {
@@ -1152,10 +1791,13 @@ mod tests {
         }
         let conn = Connection::open(&path).unwrap();
         migrate(&conn).unwrap();
+        (dir, conn)
+    }
 
-        let asset = serde_json::json!({
-            "uuid": "sample-1",
-            "name": "pack/kick.mp3",
+    fn sample_asset(uuid: &str, pack_uuid: &str, pack_name: &str) -> serde_json::Value {
+        serde_json::json!({
+            "uuid": uuid,
+            "name": format!("{pack_name}/kick.mp3"),
             "duration": 1000,
             "bpm": 120,
             "key": "C",
@@ -1164,18 +1806,23 @@ mod tests {
             "tags": [{ "uuid": "t1", "label": "Kick", "__typename": "Tag" }],
             "parents": {
                 "items": [{
-                    "uuid": "pack-1",
-                    "name": "My Pack",
+                    "uuid": pack_uuid,
+                    "name": pack_name,
                     "files": [],
                     "__typename": "PackAsset"
                 }]
             }
-        });
+        })
+    }
+
+    #[test]
+    fn ingest_and_search() {
+        let (dir, conn) = test_conn();
 
         ingest::upsert(
             &conn,
             UpsertPayload {
-                asset,
+                asset: sample_asset("sample-1", "pack-1", "My Pack"),
                 relative_audio_path: "My_Pack/kick.mp3".into(),
                 waveform_relative_path: None,
                 audio_cached_at: 1,
@@ -1229,5 +1876,139 @@ mod tests {
         )
         .unwrap();
         assert_eq!(by_key.total_records, 1);
+    }
+
+    #[test]
+    fn mirror_job_resumes_and_preserves_cached_progress() {
+        let (_dir, conn) = test_conn();
+
+        ingest::upsert(
+            &conn,
+            UpsertPayload {
+                asset: sample_asset("sample-1", "pack-1", "Cached Pack"),
+                relative_audio_path: "Cached_Pack/kick.mp3".into(),
+                waveform_relative_path: None,
+                audio_cached_at: 1,
+                favorite: None,
+            },
+        )
+        .unwrap();
+
+        let started = mirror::start_or_resume(
+            &conn,
+            MirrorStartParams {
+                filters_json: "{}".into(),
+                sort: "pack_popularity".into(),
+            },
+        )
+        .unwrap();
+        let job_id = started.job_id.unwrap();
+
+        let summary = mirror::enqueue_packs(
+            &conn,
+            job_id,
+            vec![
+                MirrorPackInput {
+                    uuid: "pack-1".into(),
+                    name: "Cached Pack".into(),
+                    rank: 1,
+                    listable_total: Some(1),
+                },
+                MirrorPackInput {
+                    uuid: "pack-2".into(),
+                    name: "Missing Pack".into(),
+                    rank: 2,
+                    listable_total: Some(2),
+                },
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(summary.total_packs, 2);
+        assert_eq!(summary.completed_packs, 1);
+        assert_eq!(summary.queued_packs, 1);
+        assert_eq!(summary.cached_samples, 1);
+
+        let resumed = mirror::start_or_resume(
+            &conn,
+            MirrorStartParams {
+                filters_json: "{}".into(),
+                sort: "pack_popularity".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(resumed.job_id, Some(job_id));
+    }
+
+    #[test]
+    fn mirror_checkpoint_complete_and_retry_failed_pack() {
+        let (_dir, conn) = test_conn();
+        let started = mirror::start_or_resume(
+            &conn,
+            MirrorStartParams {
+                filters_json: "{}".into(),
+                sort: "pack_popularity".into(),
+            },
+        )
+        .unwrap();
+        let job_id = started.job_id.unwrap();
+
+        mirror::enqueue_packs(
+            &conn,
+            job_id,
+            vec![MirrorPackInput {
+                uuid: "pack-1".into(),
+                name: "Pack 1".into(),
+                rank: 1,
+                listable_total: Some(10),
+            }],
+        )
+        .unwrap();
+
+        let claimed = mirror::claim_next_pack(&conn, job_id).unwrap().unwrap();
+        assert_eq!(claimed.status, "listing");
+        assert_eq!(claimed.attempts, 1);
+
+        let checkpoint = mirror::checkpoint_pack(
+            &conn,
+            MirrorCheckpointParams {
+                job_id,
+                pack_uuid: "pack-1".into(),
+                cursor: Some("cursor-2".into()),
+                listable_total: Some(10),
+                listed_delta: 5,
+                saved_delta: 3,
+                failed_delta: 0,
+            },
+        )
+        .unwrap();
+        assert_eq!(checkpoint.session_saved, 3);
+
+        mirror::fail_pack(
+            &conn,
+            MirrorPackFinishParams {
+                job_id,
+                pack_uuid: "pack-1".into(),
+                listable_total: Some(10),
+                error: Some("network".into()),
+            },
+        )
+        .unwrap();
+        let retry = mirror::retry_failed(&conn, job_id).unwrap();
+        assert_eq!(retry.failed_packs, 0);
+        assert_eq!(retry.queued_packs, 1);
+
+        mirror::complete_pack(
+            &conn,
+            MirrorPackFinishParams {
+                job_id,
+                pack_uuid: "pack-1".into(),
+                listable_total: Some(10),
+                error: None,
+            },
+        )
+        .unwrap();
+        let done = mirror::summary(&conn).unwrap();
+        assert_eq!(done.completed_packs, 1);
     }
 }
