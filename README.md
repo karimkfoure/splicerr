@@ -60,7 +60,7 @@ For large one-time mirrors, prefer the headless backfill runner:
 pnpm backfill:headless -- --samples-dir /Volumes/disco/splicerr --batch-size 1000 --concurrency 16
 ```
 
-It reuses the local mirror queue/checkpoints, runs GraphQL through a headless browser, and downloads/upserts batches from the terminal.
+By default it lists random samples globally, filters out anything already cached, and downloads/upserts batches from the terminal. Use `--mode packs` only when deliberately resuming the pack queue.
 
 ## 💡 Recommended IDE Setup
 

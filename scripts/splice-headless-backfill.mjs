@@ -17,6 +17,8 @@ const batchSize = Number(args.batchSize ?? 1000)
 const concurrency = Math.min(Number(args.concurrency ?? 16), 32)
 const maxBatches = args.maxBatches == null ? Infinity : Number(args.maxBatches)
 const maxPacks = args.maxPacks == null ? Infinity : Number(args.maxPacks)
+const mode = args.mode ?? "random"
+const randomSeed = String(args.seed ?? Math.floor(Math.random() * Number.MAX_SAFE_INTEGER))
 
 if (!existsSync(samplesDir)) {
     die(`Samples dir does not exist: ${samplesDir}`)
@@ -61,7 +63,7 @@ function sqlValue(value) {
 }
 
 function sqlite(sql) {
-    return execFileSync("sqlite3", [dbPath, sql], {
+    return execFileSync("sqlite3", [dbPath, `PRAGMA busy_timeout=30000;\n${sql}`], {
         encoding: "utf8",
         maxBuffer: 1024 * 1024 * 64,
     }).trim()
@@ -69,17 +71,20 @@ function sqlite(sql) {
 
 function sqliteRows(sql) {
     const out = execFileSync("sqlite3", [dbPath], {
-        input: `.mode tabs\n${sql}`,
+        input: `.mode tabs\nPRAGMA busy_timeout=30000;\n${sql}`,
         encoding: "utf8",
         maxBuffer: 1024 * 1024 * 64,
     }).trim()
     if (!out) return []
-    return out.split("\n").map((line) => line.split("\t"))
+    return out
+        .split("\n")
+        .filter((line) => line.trim() !== "30000")
+        .map((line) => line.split("\t"))
 }
 
 function sqliteExec(sql) {
     execFileSync("sqlite3", [dbPath], {
-        input: sql,
+        input: `PRAGMA busy_timeout=30000;\n${sql}`,
         encoding: "utf8",
         maxBuffer: 1024 * 1024 * 64,
     })
@@ -186,12 +191,56 @@ FROM mirror_jobs WHERE id=${jobId};
     }
 }
 
+function refreshQueuedProgress(jobId) {
+    const ts = now()
+    sqliteExec(`
+UPDATE mirror_pack_queue
+SET
+  cached_count = (
+    SELECT COUNT(*) FROM samples
+    WHERE samples.pack_uuid = mirror_pack_queue.pack_uuid
+      AND samples.audio_cached_at > 0
+  ),
+  listable_total = COALESCE(
+    (SELECT packs.listable_sample_total
+     FROM packs
+     WHERE packs.uuid = mirror_pack_queue.pack_uuid
+       AND packs.listable_sample_total > 0),
+    listable_total
+  ),
+  updated_at = ${ts}
+WHERE job_id = ${jobId}
+  AND status IN ('queued','paused','listing','downloading');
+
+UPDATE mirror_pack_queue
+SET status = 'complete',
+    cursor = NULL,
+    last_error = NULL,
+    updated_at = ${ts}
+WHERE job_id = ${jobId}
+  AND status IN ('queued','paused','listing','downloading')
+  AND listable_total IS NOT NULL
+  AND listable_total > 0
+  AND cached_count >= listable_total;
+`)
+}
+
 function nextPack(jobId) {
     const row = sqliteRows(`
 SELECT pack_uuid, pack_name, cursor, COALESCE(listable_total,''), listed_count, saved_count, attempts
 FROM mirror_pack_queue
 WHERE job_id=${jobId} AND status IN ('queued','paused')
-ORDER BY rank ASC
+ORDER BY
+  CASE
+    WHEN listable_total IS NOT NULL AND listable_total > 0 AND cached_count < listable_total THEN 0
+    WHEN cached_count = 0 THEN 1
+    ELSE 2
+  END,
+  CASE
+    WHEN listable_total IS NOT NULL AND listable_total > 0 THEN cached_count * 1.0 / listable_total
+    ELSE 0
+  END ASC,
+  rank ASC
 LIMIT 1;
 `)[0]
     if (!row) return null
@@ -516,13 +565,13 @@ async function queryGraphql(page, body) {
 
 const SamplesSearchCursor = {
     operationName: "SamplesSearchCursor",
-    query: `query SamplesSearchCursor($parent_asset_uuid: GUID, $cursor: String, $limit: Int = 50) {
+    query: `query SamplesSearchCursor($parent_asset_uuid: GUID, $cursor: String, $limit: Int = 50, $sort: AssetSortType = popularity, $order: SortOrder = DESC, $random_seed: String, $parent_asset_type: AssetTypeSlug) {
   assetsSearch(
     filter: {legacy: true, published: true, asset_type_slug: sample}
     children: {parent_asset_uuid: $parent_asset_uuid}
     pagination: {cursor: $cursor, limit: $limit}
-    sort: {sort: popularity, order: DESC}
-    legacy: {parent_asset_type: pack}
+    sort: {sort: $sort, order: $order, random_seed: $random_seed}
+    legacy: {parent_asset_type: $parent_asset_type}
   ) {
     items {
       ... on IAsset {
@@ -676,34 +725,104 @@ async function processPack(page, jobId, pack) {
     }
 }
 
+async function collectRandomMissingBatch(page, cursor) {
+    const collected = []
+    let listed = 0
+    let total = 0
+    let nextCursor = cursor
+
+    while (collected.length < batchSize) {
+        const json = await queryGraphql(page, {
+            ...SamplesSearchCursor,
+            variables: {
+                parent_asset_uuid: null,
+                parent_asset_type: null,
+                cursor: nextCursor,
+                limit: SAMPLE_PAGE_SIZE,
+                sort: "random",
+                order: "DESC",
+                random_seed: randomSeed,
+            },
+        })
+        const result = json?.data?.assetsSearch
+        if (!result) throw new Error("missing assetsSearch")
+        const items = result.items ?? []
+        total = result.response_metadata?.records ?? total
+        listed += items.length
+        const existing = existingUuids(items.map((item) => item.uuid))
+        collected.push(...items.filter((item) => !existing.has(item.uuid)))
+        nextCursor = result.response_metadata?.next ?? null
+        if (!nextCursor || items.length === 0) break
+    }
+
+    return {
+        items: collected.slice(0, batchSize),
+        listed,
+        total,
+        cursor: nextCursor,
+    }
+}
+
+async function runRandomSamples(page) {
+    log(`random sample mode seed=${randomSeed} batchSize=${batchSize} concurrency=${concurrency}`)
+    let cursor = null
+    let batches = 0
+    let savedTotal = 0
+    while (batches < maxBatches) {
+        const batch = await collectRandomMissingBatch(page, cursor)
+        if (!batch.items.length) {
+            log(`random batch found no missing samples after listing ${batch.listed}; next=${batch.cursor ? "yes" : "no"}`)
+            if (!batch.cursor) break
+            cursor = batch.cursor
+            continue
+        }
+        const result = await downloadSamples(batch.items)
+        savedTotal += result.saved
+        batches++
+        log(
+            `random batch ${batches}: listed=${batch.listed} total=${batch.total} missing=${batch.items.length} saved=${result.saved} failed=${result.failed.length} sessionSaved=${savedTotal} next=${batch.cursor ? "yes" : "no"}`
+        )
+        if (result.failed.length) {
+            log(`first failure: ${result.failed[0].sample.uuid} ${result.failed[0].error?.message ?? result.failed[0].error}`)
+        }
+        if (!batch.cursor) break
+        cursor = batch.cursor
+    }
+}
+
 async function main() {
     ensureMirrorTables()
-    const jobId = getJobId()
-    summarize(jobId)
     const { browser, page } = await setupGraphqlPage()
-    let batches = 0
-    let packs = 0
     try {
-        while (batches < maxBatches && packs < maxPacks) {
-            let pack = nextPack(jobId)
-            if (!pack) {
-                const cataloged = await catalogSomePacks(page, jobId)
-                if (!cataloged) break
-                pack = nextPack(jobId)
-                if (!pack) break
+        if (mode === "packs") {
+            const jobId = getJobId()
+            refreshQueuedProgress(jobId)
+            summarize(jobId)
+            let batches = 0
+            let packs = 0
+            while (batches < maxBatches && packs < maxPacks) {
+                let pack = nextPack(jobId)
+                if (!pack) {
+                    const cataloged = await catalogSomePacks(page, jobId)
+                    if (!cataloged) break
+                    pack = nextPack(jobId)
+                    if (!pack) break
+                }
+                try {
+                    await processPack(page, jobId, pack)
+                } catch (e) {
+                    log(`pack failed ${pack.name}: ${e.message ?? e}`)
+                    markFailed(jobId, pack, e)
+                }
+                batches++
+                packs++
+                if (batches % 5 === 0) summarize(jobId)
             }
-            try {
-                await processPack(page, jobId, pack)
-            } catch (e) {
-                log(`pack failed ${pack.name}: ${e.message ?? e}`)
-                markFailed(jobId, pack, e)
-            }
-            batches++
-            packs++
-            if (batches % 5 === 0) summarize(jobId)
+            summarize(jobId)
+        } else {
+            await runRandomSamples(page)
         }
     } finally {
-        summarize(jobId)
         await browser.close()
     }
 }
