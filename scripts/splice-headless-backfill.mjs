@@ -14,7 +14,7 @@ const args = parseArgs(process.argv.slice(2))
 const samplesDir = args.samplesDir ?? DEFAULT_SAMPLES_DIR
 const dbPath = path.join(samplesDir, ".splicerr", "library.db")
 const batchSize = Number(args.batchSize ?? 1000)
-const concurrency = Math.min(Number(args.concurrency ?? 16), 32)
+const concurrency = Math.max(1, Number(args.concurrency ?? 16))
 const maxBatches = args.maxBatches == null ? Infinity : Number(args.maxBatches)
 const maxPacks = args.maxPacks == null ? Infinity : Number(args.maxPacks)
 const mode = args.mode ?? "random"
@@ -321,13 +321,27 @@ function existingUuids(uuids) {
     return new Set(rows.map((r) => r[0]))
 }
 
+function uniqueRelativePath(uuid, rel) {
+    const owner = sqliteRows(
+        `SELECT uuid FROM samples WHERE relative_audio_path=${sqlValue(rel)} LIMIT 1;`
+    )[0]?.[0]
+    if (!owner || owner === uuid) return rel
+
+    const ext = path.extname(rel)
+    const base = rel.slice(0, rel.length - ext.length)
+    return `${base}_${uuid.slice(0, 8)}${ext}`
+}
+
 function upsertSamples(samples, relativePaths) {
     if (!samples.length) return
     const statements = []
     for (const sample of samples) {
         const pack = sample.parents?.items?.[0]
         if (!pack?.uuid || !pack?.name) continue
-        const relativePath = relativePaths.get(sample.uuid)
+        const relativePath = uniqueRelativePath(
+            sample.uuid,
+            relativePaths.get(sample.uuid)
+        )
         const coverRel = `${sanitizePathSegment(pack.name)}/cover.jpg`
         const coverUrl = resolvePackCoverUrl(pack)
         const audioCachedAt = now()
@@ -515,7 +529,7 @@ async function downloadSamples(samples) {
     const relativePaths = new Map()
     await runPool(samples, concurrency, async (sample) => {
         try {
-            const rel = sampleRelativePath(sample)
+            const rel = uniqueRelativePath(sample.uuid, sampleRelativePath(sample))
             const abs = path.join(samplesDir, rel)
             relativePaths.set(sample.uuid, rel)
             if (!existsSync(abs)) {
