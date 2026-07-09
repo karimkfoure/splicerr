@@ -68,7 +68,11 @@ function sqlite(sql) {
 }
 
 function sqliteRows(sql) {
-    const out = sqlite(`.mode tabs\n${sql}`)
+    const out = execFileSync("sqlite3", [dbPath], {
+        input: `.mode tabs\n${sql}`,
+        encoding: "utf8",
+        maxBuffer: 1024 * 1024 * 64,
+    }).trim()
     if (!out) return []
     return out.split("\n").map((line) => line.split("\t"))
 }
