@@ -54,6 +54,14 @@ https://github.com/user-attachments/assets/34f1ba90-c881-4a04-a5df-c147bdb51c2c
 
 Set **samples directory** in app settings to enable the local mirror (MP3 + SQLite under `.splicerr/`). For fork-specific architecture and how we iterate, see [AGENTS.md](./AGENTS.md).
 
+For large one-time mirrors, prefer the headless backfill runner:
+
+```bash
+pnpm backfill:headless -- --samples-dir /Volumes/disco/splicerr --batch-size 1000 --concurrency 16
+```
+
+It reuses the local mirror queue/checkpoints, runs GraphQL through a headless browser, and downloads/upserts batches from the terminal.
+
 ## 💡 Recommended IDE Setup
 
 [VS Code](https://code.visualstudio.com/) + [Svelte](https://marketplace.visualstudio.com/items?itemName=svelte.svelte-vscode) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)

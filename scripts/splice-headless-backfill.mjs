@@ -1,0 +1,710 @@
+#!/usr/bin/env node
+import { chromium } from "playwright"
+import { execFileSync } from "node:child_process"
+import { existsSync, mkdirSync, writeFileSync } from "node:fs"
+import path from "node:path"
+
+const SPLICE_GRAPHQL_URL = "https://surfaces-graphql.splice.com/graphql"
+const DEFAULT_SAMPLES_DIR = "/Volumes/disco/splicerr"
+
+const SAMPLE_PAGE_SIZE = 100
+const PACK_PAGE_SIZE = 50
+
+const args = parseArgs(process.argv.slice(2))
+const samplesDir = args.samplesDir ?? DEFAULT_SAMPLES_DIR
+const dbPath = path.join(samplesDir, ".splicerr", "library.db")
+const batchSize = Number(args.batchSize ?? 1000)
+const concurrency = Math.min(Number(args.concurrency ?? 16), 32)
+const maxBatches = args.maxBatches == null ? Infinity : Number(args.maxBatches)
+const maxPacks = args.maxPacks == null ? Infinity : Number(args.maxPacks)
+
+if (!existsSync(samplesDir)) {
+    die(`Samples dir does not exist: ${samplesDir}`)
+}
+if (!existsSync(dbPath)) {
+    die(`Library DB does not exist: ${dbPath}`)
+}
+
+const now = () => Date.now()
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+
+function log(line) {
+    console.log(`[${new Date().toISOString()}] ${line}`)
+}
+
+function die(message) {
+    console.error(message)
+    process.exit(1)
+}
+
+function parseArgs(argv) {
+    const out = {}
+    for (let i = 0; i < argv.length; i++) {
+        const arg = argv[i]
+        if (!arg.startsWith("--")) continue
+        const key = arg.slice(2).replace(/-([a-z])/g, (_, c) => c.toUpperCase())
+        const next = argv[i + 1]
+        if (!next || next.startsWith("--")) {
+            out[key] = true
+        } else {
+            out[key] = next
+            i++
+        }
+    }
+    return out
+}
+
+function sqlValue(value) {
+    if (value == null) return "NULL"
+    if (typeof value === "number") return Number.isFinite(value) ? String(value) : "NULL"
+    return `'${String(value).replaceAll("'", "''")}'`
+}
+
+function sqlite(sql) {
+    return execFileSync("sqlite3", [dbPath, sql], {
+        encoding: "utf8",
+        maxBuffer: 1024 * 1024 * 64,
+    }).trim()
+}
+
+function sqliteRows(sql) {
+    const out = sqlite(`.mode tabs\n${sql}`)
+    if (!out) return []
+    return out.split("\n").map((line) => line.split("\t"))
+}
+
+function sqliteExec(sql) {
+    execFileSync("sqlite3", [dbPath], {
+        input: sql,
+        encoding: "utf8",
+        maxBuffer: 1024 * 1024 * 64,
+    })
+}
+
+function ensureMirrorTables() {
+    sqliteExec(`
+CREATE TABLE IF NOT EXISTS mirror_jobs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  status TEXT NOT NULL,
+  sort TEXT NOT NULL,
+  filters_json TEXT NOT NULL,
+  total_packs INTEGER NOT NULL DEFAULT 0,
+  completed_packs INTEGER NOT NULL DEFAULT 0,
+  failed_packs INTEGER NOT NULL DEFAULT 0,
+  total_samples INTEGER NOT NULL DEFAULT 0,
+  cached_samples INTEGER NOT NULL DEFAULT 0,
+  session_saved INTEGER NOT NULL DEFAULT 0,
+  current_pack_uuid TEXT,
+  last_error TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS mirror_pack_queue (
+  job_id INTEGER NOT NULL,
+  pack_uuid TEXT NOT NULL,
+  pack_name TEXT NOT NULL,
+  rank INTEGER NOT NULL,
+  status TEXT NOT NULL,
+  cursor TEXT,
+  listable_total INTEGER,
+  cached_count INTEGER NOT NULL DEFAULT 0,
+  listed_count INTEGER NOT NULL DEFAULT 0,
+  saved_count INTEGER NOT NULL DEFAULT 0,
+  failed_count INTEGER NOT NULL DEFAULT 0,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY (job_id, pack_uuid)
+);
+CREATE INDEX IF NOT EXISTS idx_mirror_pack_queue_status_rank
+  ON mirror_pack_queue(job_id, status, rank);
+CREATE TABLE IF NOT EXISTS mirror_failures (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  job_id INTEGER NOT NULL,
+  pack_uuid TEXT,
+  sample_uuid TEXT,
+  error TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+`)
+}
+
+function getJobId() {
+    const rows = sqliteRows(
+        "SELECT id FROM mirror_jobs WHERE status IN ('running','paused','idle') ORDER BY updated_at DESC LIMIT 1;"
+    )
+    if (rows[0]?.[0]) {
+        const id = Number(rows[0][0])
+        sqliteExec(`
+UPDATE mirror_pack_queue
+SET status='queued', updated_at=${now()}
+WHERE job_id=${id} AND status IN ('listing','downloading');
+UPDATE mirror_jobs SET status='running', current_pack_uuid=NULL, updated_at=${now()} WHERE id=${id};
+`)
+        return id
+    }
+    const ts = now()
+    sqliteExec(`
+INSERT INTO mirror_jobs (status, sort, filters_json, created_at, updated_at)
+VALUES ('running', 'pack_popularity', '{"tags":[]}', ${ts}, ${ts});
+`)
+    return Number(sqliteRows("SELECT MAX(id) FROM mirror_jobs;")[0][0])
+}
+
+function countCached(packUuid) {
+    return Number(
+        sqliteRows(
+            `SELECT COUNT(*) FROM samples WHERE pack_uuid=${sqlValue(packUuid)} AND audio_cached_at > 0;`
+        )[0]?.[0] ?? 0
+    )
+}
+
+function summarize(jobId) {
+    sqliteExec(`
+UPDATE mirror_jobs
+SET total_packs=(SELECT COUNT(*) FROM mirror_pack_queue WHERE job_id=${jobId}),
+    completed_packs=(SELECT COUNT(*) FROM mirror_pack_queue WHERE job_id=${jobId} AND status='complete'),
+    failed_packs=(SELECT COUNT(*) FROM mirror_pack_queue WHERE job_id=${jobId} AND status='failed'),
+    total_samples=COALESCE((SELECT SUM(COALESCE(listable_total,0)) FROM mirror_pack_queue WHERE job_id=${jobId}),0),
+    cached_samples=COALESCE((SELECT SUM(cached_count) FROM mirror_pack_queue WHERE job_id=${jobId}),0),
+    updated_at=${now()}
+WHERE id=${jobId};
+`)
+    const rows = sqliteRows(`
+SELECT status,total_packs,completed_packs,failed_packs,total_samples,cached_samples,session_saved
+FROM mirror_jobs WHERE id=${jobId};
+`)
+    if (rows[0]) {
+        const [status, packs, complete, failed, totalSamples, cached, saved] = rows[0]
+        log(
+            `summary status=${status} packs=${complete}/${packs} failed=${failed} samples=${cached}/${totalSamples} sessionSaved=${saved}`
+        )
+    }
+}
+
+function nextPack(jobId) {
+    const row = sqliteRows(`
+SELECT pack_uuid, pack_name, cursor, COALESCE(listable_total,''), listed_count, saved_count, attempts
+FROM mirror_pack_queue
+WHERE job_id=${jobId} AND status IN ('queued','paused')
+ORDER BY rank ASC
+LIMIT 1;
+`)[0]
+    if (!row) return null
+    const [uuid, name, cursor, total, listed, saved, attempts] = row
+    const cached = countCached(uuid)
+    sqliteExec(`
+UPDATE mirror_pack_queue
+SET status='listing', attempts=attempts+1, cached_count=${cached}, last_error=NULL, updated_at=${now()}
+WHERE job_id=${jobId} AND pack_uuid=${sqlValue(uuid)};
+UPDATE mirror_jobs
+SET status='running', current_pack_uuid=${sqlValue(uuid)}, updated_at=${now()}
+WHERE id=${jobId};
+`)
+    return {
+        uuid,
+        name,
+        cursor: cursor || null,
+        total: total ? Number(total) : null,
+        listed: Number(listed),
+        saved: Number(saved),
+        attempts: Number(attempts),
+    }
+}
+
+function markComplete(jobId, pack, total) {
+    const cached = countCached(pack.uuid)
+    sqliteExec(`
+UPDATE mirror_pack_queue
+SET status='complete', cursor=NULL, listable_total=COALESCE(${sqlValue(total)}, listable_total),
+    cached_count=${cached}, last_error=NULL, updated_at=${now()}
+WHERE job_id=${jobId} AND pack_uuid=${sqlValue(pack.uuid)};
+UPDATE packs
+SET listable_sample_total=COALESCE(${sqlValue(total)}, listable_sample_total)
+WHERE uuid=${sqlValue(pack.uuid)};
+UPDATE mirror_jobs SET current_pack_uuid=NULL, updated_at=${now()} WHERE id=${jobId};
+`)
+}
+
+function markFailed(jobId, pack, error) {
+    const detail = String(error?.message ?? error).slice(0, 1000)
+    sqliteExec(`
+UPDATE mirror_pack_queue
+SET status='failed', last_error=${sqlValue(detail)}, updated_at=${now()}
+WHERE job_id=${jobId} AND pack_uuid=${sqlValue(pack.uuid)};
+INSERT INTO mirror_failures (job_id, pack_uuid, error, created_at)
+VALUES (${jobId}, ${sqlValue(pack.uuid)}, ${sqlValue(detail)}, ${now()});
+UPDATE mirror_jobs
+SET current_pack_uuid=NULL, last_error=${sqlValue(detail)}, updated_at=${now()}
+WHERE id=${jobId};
+`)
+}
+
+function checkpoint(jobId, pack, cursor, total, listedDelta, savedDelta, failedDelta) {
+    const cached = countCached(pack.uuid)
+    sqliteExec(`
+UPDATE mirror_pack_queue
+SET status='queued',
+    cursor=${sqlValue(cursor)},
+    listable_total=COALESCE(${sqlValue(total)}, listable_total),
+    cached_count=${cached},
+    listed_count=listed_count+${Math.max(0, listedDelta)},
+    saved_count=saved_count+${Math.max(0, savedDelta)},
+    failed_count=failed_count+${Math.max(0, failedDelta)},
+    updated_at=${now()}
+WHERE job_id=${jobId} AND pack_uuid=${sqlValue(pack.uuid)};
+UPDATE mirror_jobs
+SET session_saved=session_saved+${Math.max(0, savedDelta)}, updated_at=${now()}
+WHERE id=${jobId};
+`)
+}
+
+function existingUuids(uuids) {
+    if (!uuids.length) return new Set()
+    const values = uuids.map(sqlValue).join(",")
+    const rows = sqliteRows(
+        `SELECT uuid FROM samples WHERE audio_cached_at > 0 AND uuid IN (${values});`
+    )
+    return new Set(rows.map((r) => r[0]))
+}
+
+function upsertSamples(samples, relativePaths) {
+    if (!samples.length) return
+    const statements = []
+    for (const sample of samples) {
+        const pack = sample.parents?.items?.[0]
+        if (!pack?.uuid || !pack?.name) continue
+        const relativePath = relativePaths.get(sample.uuid)
+        const coverRel = `${sanitizePathSegment(pack.name)}/cover.jpg`
+        const coverUrl = resolvePackCoverUrl(pack)
+        const audioCachedAt = now()
+        const key = sample.key ? String(sample.key).toUpperCase() : null
+        const chordType = sample.chord_type ? String(sample.chord_type).toLowerCase() : null
+        const displayName = String(sample.name).split("/").pop()
+        statements.push(`
+INSERT INTO packs (uuid, name, cover_relative_path, cover_source_url)
+VALUES (${sqlValue(pack.uuid)}, ${sqlValue(pack.name)}, ${sqlValue(coverRel)}, ${sqlValue(coverUrl)})
+ON CONFLICT(uuid) DO UPDATE SET
+  name=excluded.name,
+  cover_relative_path=COALESCE(excluded.cover_relative_path, packs.cover_relative_path),
+  cover_source_url=COALESCE(excluded.cover_source_url, packs.cover_source_url);
+
+INSERT INTO samples (
+  uuid, pack_uuid, name, display_name, relative_audio_path,
+  duration_ms, bpm, key, chord_type, asset_category_slug,
+  favorite, audio_cached_at, ingested_at, pack_name, waveform_relative_path
+) VALUES (
+  ${sqlValue(sample.uuid)}, ${sqlValue(pack.uuid)}, ${sqlValue(sample.name)},
+  ${sqlValue(displayName)}, ${sqlValue(relativePath)}, ${Number(sample.duration ?? 0)},
+  ${sample.bpm == null ? "NULL" : Number(sample.bpm)}, ${sqlValue(key)},
+  ${sqlValue(chordType)}, ${sqlValue(sample.asset_category_slug ?? "oneshot")},
+  0, ${audioCachedAt}, ${audioCachedAt}, ${sqlValue(pack.name)}, NULL
+)
+ON CONFLICT(uuid) DO UPDATE SET
+  pack_uuid=excluded.pack_uuid,
+  name=excluded.name,
+  display_name=excluded.display_name,
+  relative_audio_path=excluded.relative_audio_path,
+  duration_ms=excluded.duration_ms,
+  bpm=excluded.bpm,
+  key=excluded.key,
+  chord_type=excluded.chord_type,
+  asset_category_slug=excluded.asset_category_slug,
+  audio_cached_at=excluded.audio_cached_at,
+  pack_name=excluded.pack_name;
+
+DELETE FROM sample_tags WHERE sample_uuid=${sqlValue(sample.uuid)};
+DELETE FROM samples_fts WHERE sample_uuid=${sqlValue(sample.uuid)};
+INSERT INTO samples_fts (sample_uuid, name, display_name, pack_name)
+VALUES (${sqlValue(sample.uuid)}, ${sqlValue(sample.name)}, ${sqlValue(displayName)}, ${sqlValue(pack.name)});
+`)
+        for (const tag of sample.tags ?? []) {
+            statements.push(`
+INSERT INTO tags (uuid, label)
+VALUES (${sqlValue(tag.uuid)}, ${sqlValue(tag.label)})
+ON CONFLICT(uuid) DO UPDATE SET label=excluded.label;
+INSERT OR IGNORE INTO sample_tags (sample_uuid, tag_uuid)
+VALUES (${sqlValue(sample.uuid)}, ${sqlValue(tag.uuid)});
+`)
+        }
+    }
+    sqliteExec(`BEGIN;\n${statements.join("\n")}\nCOMMIT;`)
+}
+
+function resolvePackCoverUrl(pack) {
+    for (const f of pack.files ?? []) {
+        if (
+            (f.asset_file_type_slug === "cover_image" ||
+                f.asset_file_type_slug === "generated_cover_image") &&
+            /^https?:\/\//.test(f.url ?? "")
+        ) {
+            return f.url
+        }
+    }
+    return null
+}
+
+const AUDIO_EXT = /\.(wav|mp3|aiff|aif|flac|m4a)$/i
+const CONTENT_ROOT =
+    /^(one_?shots?|onshots|loops?|loopp?|midi|fx|sfx|samples?|audio|drums?|perc|oneshots|drum_?hits?)$/i
+
+function sampleRelativePath(sample) {
+    const packName = sample.parents.items[0].name
+    const packDir = sanitizePathSegment(packName)
+    const { dir, leaf } = resolveSpliceInnerPath(sample)
+    const trimmedDir = processInnerDir(dir, packName)
+    const fileName = `${leaf.replace(AUDIO_EXT, "")}.mp3`
+    return sanitizePathSegment(trimmedDir ? `${packDir}/${trimmedDir}/${fileName}` : `${packDir}/${fileName}`)
+}
+
+function sanitizePathSegment(value) {
+    return String(value).replace(/[^a-zA-Z0-9#_\-\.\/]/g, "_")
+}
+
+function resolveSpliceInnerPath(sample) {
+    const displayDir = sample.display_file_path?.replace(/^\/+|\/+$/g, "")
+    if (displayDir) {
+        return {
+            dir: displayDir,
+            leaf: sample.display_name?.trim() || spliceSampleLeafName(sample.name),
+        }
+    }
+    const filePath = sample.files?.[0]?.path?.replace(/^\/+/, "")
+    if (filePath?.includes("/")) {
+        return {
+            dir: spliceSampleDirname(filePath),
+            leaf: spliceSampleLeafName(filePath),
+        }
+    }
+    return {
+        dir: spliceSampleDirname(sample.name),
+        leaf: spliceSampleLeafName(sample.name),
+    }
+}
+
+function spliceSampleDirname(name) {
+    const idx = String(name).lastIndexOf("/")
+    return idx === -1 ? "" : String(name).slice(0, idx)
+}
+
+function spliceSampleLeafName(name) {
+    const idx = String(name).lastIndexOf("/")
+    return idx === -1 ? String(name) : String(name).slice(idx + 1)
+}
+
+function normalizePathToken(value) {
+    return String(value).toLowerCase().replace(/[^a-z0-9]/g, "")
+}
+
+function segmentOverlapsPack(segment, packName) {
+    const a = normalizePathToken(segment)
+    const b = normalizePathToken(packName)
+    if (!a || !b) return false
+    if (a === b) return true
+    const [short, long] = a.length <= b.length ? [a, b] : [b, a]
+    return short.length >= 4 && long.includes(short)
+}
+
+function processInnerDir(dirPath, packName) {
+    let parts = String(dirPath).split("/").filter(Boolean)
+    if (parts.length >= 2 && (CONTENT_ROOT.test(parts[1]) || CONTENT_ROOT.test(normalizePathToken(parts[1])))) {
+        parts = parts.slice(1)
+    }
+    while (parts.length > 0 && segmentOverlapsPack(parts[0], packName)) {
+        parts.shift()
+    }
+    return parts
+        .map((part) => {
+            if (!segmentOverlapsPack(part, packName)) return part
+            const dashParts = part.split(/_-_/).filter(Boolean)
+            const tail = dashParts[dashParts.length - 1]
+            return tail && !segmentOverlapsPack(tail, packName) ? tail : part
+        })
+        .join("/")
+}
+
+function descramble(data) {
+    if (data.length < 28) throw new Error("scrambled sample too short")
+    let dataSize = 0
+    for (let i = 0; i < 8; i++) dataSize += data[2 + i] * 256 ** i
+    const encodingBlock = data.subarray(10, 28)
+    const audio = Buffer.from(data.subarray(28))
+    let passIndex = descramblePass(0, audio, encodingBlock, dataSize) + dataSize
+    descramblePass(passIndex, audio, encodingBlock, passIndex + dataSize)
+    return audio
+}
+
+function descramblePass(startIndex, data, encodingBlock, dataSize) {
+    for (
+        let encodingIndex = 0;
+        startIndex < dataSize && startIndex < data.length;
+        startIndex++, encodingIndex = (encodingIndex + 1) % encodingBlock.length
+    ) {
+        data[startIndex] ^= encodingBlock[encodingIndex]
+    }
+    return startIndex
+}
+
+async function runPool(items, limit, worker) {
+    let next = 0
+    const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+        while (next < items.length) {
+            const item = items[next++]
+            await worker(item)
+        }
+    })
+    await Promise.all(workers)
+}
+
+async function downloadSamples(samples) {
+    const saved = []
+    const failed = []
+    const relativePaths = new Map()
+    await runPool(samples, concurrency, async (sample) => {
+        try {
+            const rel = sampleRelativePath(sample)
+            const abs = path.join(samplesDir, rel)
+            relativePaths.set(sample.uuid, rel)
+            if (!existsSync(abs)) {
+                const url = sample.files?.[0]?.url
+                if (!url) throw new Error("missing audio url")
+                const response = await fetch(url)
+                if (!response.ok) throw new Error(`download HTTP ${response.status}`)
+                const scrambled = Buffer.from(await response.arrayBuffer())
+                const mp3 = descramble(scrambled)
+                mkdirSync(path.dirname(abs), { recursive: true })
+                writeFileSync(abs, mp3)
+            }
+            saved.push(sample)
+        } catch (e) {
+            failed.push({ sample, error: e })
+        }
+    })
+    if (saved.length) {
+        upsertSamples(saved, relativePaths)
+    }
+    return { saved: saved.length, failed }
+}
+
+async function setupGraphqlPage() {
+    const browser = await chromium.launch({ headless: true })
+    const page = await browser.newPage()
+    await page.goto(SPLICE_GRAPHQL_URL, { waitUntil: "domcontentloaded" })
+    return { browser, page }
+}
+
+async function queryGraphql(page, body) {
+    return await page.evaluate(async ({ body }) => {
+        const response = await fetch("/graphql", {
+            method: "POST",
+            headers: {
+                "content-type": "application/json",
+                "apollo-require-preflight": "true",
+                "x-apollo-operation-name": body.operationName,
+            },
+            body: JSON.stringify(body),
+        })
+        const text = await response.text()
+        if (!response.ok) throw new Error(`HTTP ${response.status}: ${text.slice(0, 200)}`)
+        return JSON.parse(text)
+    }, { body })
+}
+
+const SamplesSearchCursor = {
+    operationName: "SamplesSearchCursor",
+    query: `query SamplesSearchCursor($parent_asset_uuid: GUID, $cursor: String, $limit: Int = 50) {
+  assetsSearch(
+    filter: {legacy: true, published: true, asset_type_slug: sample}
+    children: {parent_asset_uuid: $parent_asset_uuid}
+    pagination: {cursor: $cursor, limit: $limit}
+    sort: {sort: popularity, order: DESC}
+    legacy: {parent_asset_type: pack}
+  ) {
+    items {
+      ... on IAsset {
+        asset_type_slug
+        asset_prices { amount currency __typename }
+        uuid
+        name
+        tags { uuid label __typename }
+        files { uuid name hash path asset_file_type_slug url __typename }
+        __typename
+      }
+      ... on IAssetChild {
+        parents(filter: {asset_type_slug: pack}) {
+          items {
+            ... on PackAsset {
+              permalink_slug
+              permalink_base_url
+              uuid
+              name
+              files { uuid path asset_file_type_slug url __typename }
+              child_asset_counts { type count __typename }
+              __typename
+            }
+            __typename
+          }
+          __typename
+        }
+        __typename
+      }
+      ... on SampleAsset {
+        bpm
+        chord_type
+        key
+        duration
+        uuid
+        name
+        display_file_path
+        display_name
+        asset_category_slug
+        __typename
+      }
+      __typename
+    }
+    response_metadata { records next previous __typename }
+    __typename
+  }
+}`,
+}
+
+const PacksSearch = {
+    operationName: "PacksSearch",
+    query: `query PacksSearch($page: Int, $limit: Int = 50) {
+  assetsSearch(
+    filter: {legacy: true, published: true, asset_type_slug: pack}
+    pagination: {page: $page, limit: $limit}
+    sort: {sort: popularity, order: DESC}
+  ) {
+    items {
+      ... on PackAsset {
+        uuid
+        name
+        permalink_slug
+        permalink_base_url
+        files { uuid path asset_file_type_slug url __typename }
+        child_asset_counts { type count __typename }
+        __typename
+      }
+      __typename
+    }
+    pagination_metadata { currentPage totalPages __typename }
+    response_metadata { records __typename }
+    __typename
+  }
+}`,
+}
+
+async function catalogSomePacks(page, jobId) {
+    const totalPacks = Number(sqliteRows(`SELECT total_packs FROM mirror_jobs WHERE id=${jobId};`)[0]?.[0] ?? 0)
+    const nextPage = Math.floor(totalPacks / PACK_PAGE_SIZE) + 1
+    log(`no queued packs; cataloging packs page ${nextPage}`)
+    const json = await queryGraphql(page, {
+        ...PacksSearch,
+        variables: { page: nextPage, limit: PACK_PAGE_SIZE },
+    })
+    const result = json?.data?.assetsSearch
+    if (!result?.items?.length) return false
+    const rankOffset = (result.pagination_metadata.currentPage - 1) * PACK_PAGE_SIZE
+    const ts = now()
+    const statements = result.items.map((pack, index) => {
+        const total = pack.child_asset_counts?.find((row) => row.type === "sample")?.count ?? null
+        const cached = countCached(pack.uuid)
+        const status = total && cached >= total ? "complete" : "queued"
+        return `
+INSERT INTO packs (uuid, name, listable_sample_total)
+VALUES (${sqlValue(pack.uuid)}, ${sqlValue(pack.name)}, ${sqlValue(total)})
+ON CONFLICT(uuid) DO UPDATE SET
+  name=excluded.name,
+  listable_sample_total=COALESCE(excluded.listable_sample_total, packs.listable_sample_total);
+INSERT INTO mirror_pack_queue (job_id, pack_uuid, pack_name, rank, status, listable_total, cached_count, updated_at)
+VALUES (${jobId}, ${sqlValue(pack.uuid)}, ${sqlValue(pack.name)}, ${rankOffset + index + 1}, ${sqlValue(status)}, ${sqlValue(total)}, ${cached}, ${ts})
+ON CONFLICT(job_id, pack_uuid) DO NOTHING;
+`
+    })
+    sqliteExec(`BEGIN;\n${statements.join("\n")}\nCOMMIT;`)
+    summarize(jobId)
+    return true
+}
+
+async function processPack(page, jobId, pack) {
+    log(`pack start ${pack.name} (${pack.uuid}) cursor=${pack.cursor ?? "first"}`)
+    let cursor = pack.cursor
+    let total = pack.total
+    let collected = []
+    let listedDelta = 0
+    let lastCursor = cursor
+
+    while (collected.length < batchSize) {
+        const json = await queryGraphql(page, {
+            ...SamplesSearchCursor,
+            variables: {
+                parent_asset_uuid: pack.uuid,
+                cursor,
+                limit: SAMPLE_PAGE_SIZE,
+            },
+        })
+        const result = json?.data?.assetsSearch
+        if (!result) throw new Error("missing assetsSearch")
+        const items = result.items ?? []
+        total = result.response_metadata?.records ?? total
+        const existing = existingUuids(items.map((item) => item.uuid))
+        const missing = items.filter((item) => !existing.has(item.uuid))
+        collected.push(...missing)
+        listedDelta += items.length
+        lastCursor = result.response_metadata?.next ?? null
+        cursor = lastCursor
+        if (!cursor || items.length === 0) break
+    }
+
+    const batch = collected.slice(0, batchSize)
+    const result = await downloadSamples(batch)
+    checkpoint(jobId, pack, lastCursor, total, listedDelta, result.saved, result.failed.length)
+    log(
+        `pack batch ${pack.name}: listed=${listedDelta} missing=${batch.length} saved=${result.saved} failed=${result.failed.length} next=${lastCursor ? "yes" : "no"}`
+    )
+    if (result.failed.length) {
+        throw new Error(result.failed[0].error?.message ?? "sample download failed")
+    }
+    if (!lastCursor) {
+        markComplete(jobId, pack, total)
+        log(`pack complete ${pack.name}`)
+    }
+}
+
+async function main() {
+    ensureMirrorTables()
+    const jobId = getJobId()
+    summarize(jobId)
+    const { browser, page } = await setupGraphqlPage()
+    let batches = 0
+    let packs = 0
+    try {
+        while (batches < maxBatches && packs < maxPacks) {
+            let pack = nextPack(jobId)
+            if (!pack) {
+                const cataloged = await catalogSomePacks(page, jobId)
+                if (!cataloged) break
+                pack = nextPack(jobId)
+                if (!pack) break
+            }
+            try {
+                await processPack(page, jobId, pack)
+            } catch (e) {
+                log(`pack failed ${pack.name}: ${e.message ?? e}`)
+                markFailed(jobId, pack, e)
+            }
+            batches++
+            packs++
+            if (batches % 5 === 0) summarize(jobId)
+        }
+    } finally {
+        summarize(jobId)
+        await browser.close()
+    }
+}
+
+main().catch((e) => {
+    console.error(e)
+    process.exit(1)
+})
