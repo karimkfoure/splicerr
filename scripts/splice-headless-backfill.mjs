@@ -1,19 +1,20 @@
 #!/usr/bin/env node
 import { chromium } from "playwright"
-import { execFileSync } from "node:child_process"
+import { execFileSync, spawn } from "node:child_process"
 import { existsSync, mkdirSync, writeFileSync } from "node:fs"
 import path from "node:path"
 
 const SPLICE_GRAPHQL_URL = "https://surfaces-graphql.splice.com/graphql"
 const DEFAULT_SAMPLES_DIR = "/Volumes/disco/splicerr"
 
-const SAMPLE_PAGE_SIZE = 100
+const DEFAULT_SAMPLE_PAGE_SIZE = 100
 const PACK_PAGE_SIZE = 50
 
 const args = parseArgs(process.argv.slice(2))
 const samplesDir = args.samplesDir ?? DEFAULT_SAMPLES_DIR
 const dbPath = path.join(samplesDir, ".splicerr", "library.db")
 const batchSize = Number(args.batchSize ?? 1000)
+const samplePageSize = Math.min(100, Math.max(1, Number(args.pageSize ?? DEFAULT_SAMPLE_PAGE_SIZE)))
 const concurrency = Math.max(1, Number(args.concurrency ?? 16))
 const maxBatches = args.maxBatches == null ? Infinity : Number(args.maxBatches)
 const maxPacks = args.maxPacks == null ? Infinity : Number(args.maxPacks)
@@ -118,6 +119,23 @@ function sqliteExec(sql) {
         input: `PRAGMA busy_timeout=30000;\n${sql}`,
         encoding: "utf8",
         maxBuffer: 1024 * 1024 * 64,
+    })
+}
+
+function sqliteExecAsync(sql) {
+    return new Promise((resolve, reject) => {
+        const child = spawn(sqliteBin, [dbPath], { stdio: ["pipe", "ignore", "pipe"] })
+        let stderr = ""
+        child.stderr.setEncoding("utf8")
+        child.stderr.on("data", (chunk) => {
+            if (stderr.length < 64 * 1024) stderr += chunk
+        })
+        child.on("error", reject)
+        child.on("close", (code) => {
+            if (code === 0) resolve()
+            else reject(new Error(`sqlite3 exited ${code}: ${stderr.trim()}`))
+        })
+        child.stdin.end(`PRAGMA busy_timeout=30000;\n${sql}`)
     })
 }
 
@@ -363,18 +381,46 @@ function existingUuids(uuids) {
     return new Set(rows.map((r) => r[0]))
 }
 
-function uniqueRelativePath(uuid, rel) {
-    const owner = sqliteRows(
-        `SELECT uuid FROM samples WHERE relative_audio_path=${sqlValue(rel)} LIMIT 1;`
-    )[0]?.[0]
-    if (!owner || owner === uuid) return rel
-
+function suffixedRelativePath(uuid, rel, fullUuid = false) {
     const ext = path.extname(rel)
     const base = rel.slice(0, rel.length - ext.length)
-    return `${base}_${uuid.slice(0, 8)}${ext}`
+    return `${base}_${fullUuid ? uuid : uuid.slice(0, 8)}${ext}`
 }
 
-function upsertSamples(samples, relativePaths) {
+function allocateRelativePaths(samples) {
+    const candidates = samples.map((sample) => {
+        const base = sampleRelativePath(sample)
+        return {
+            sample,
+            base,
+            short: suffixedRelativePath(sample.uuid, base),
+        }
+    })
+    const paths = [...new Set(candidates.flatMap(({ base, short }) => [base, short]))]
+    const owners = new Map()
+    if (paths.length) {
+        const rows = sqliteRows(
+            `SELECT relative_audio_path, uuid FROM samples WHERE relative_audio_path IN (${paths.map(sqlValue).join(",")});`
+        )
+        for (const [relativePath, uuid] of rows) owners.set(relativePath, uuid)
+    }
+
+    const allocated = new Map()
+    for (const { sample, base, short } of candidates) {
+        let relativePath = base
+        if (owners.has(relativePath) && owners.get(relativePath) !== sample.uuid) {
+            relativePath = short
+        }
+        if (owners.has(relativePath) && owners.get(relativePath) !== sample.uuid) {
+            relativePath = suffixedRelativePath(sample.uuid, base, true)
+        }
+        owners.set(relativePath, sample.uuid)
+        allocated.set(sample.uuid, relativePath)
+    }
+    return allocated
+}
+
+async function upsertSamples(samples, relativePaths) {
     if (!samples.length) return
     const statements = []
     const materializable = samples.filter((sample) => {
@@ -385,10 +431,7 @@ function upsertSamples(samples, relativePaths) {
     const sampleUuids = materializable.map((sample) => sqlValue(sample.uuid)).join(",")
     for (const sample of materializable) {
         const pack = sample.parents?.items?.[0]
-        const relativePath = uniqueRelativePath(
-            sample.uuid,
-            relativePaths.get(sample.uuid)
-        )
+        const relativePath = relativePaths.get(sample.uuid)
         const coverRel = `${sanitizePathSegment(pack.name)}/cover.jpg`
         const coverUrl = resolvePackCoverUrl(pack)
         const audioCachedAt = now()
@@ -440,7 +483,7 @@ VALUES (${sqlValue(sample.uuid)}, ${sqlValue(tag.uuid)});
 `)
         }
     }
-    sqliteExec(`BEGIN;
+    await sqliteExecAsync(`BEGIN;
 DELETE FROM sample_tags WHERE sample_uuid IN (${sampleUuids});
 DELETE FROM samples_fts WHERE sample_uuid IN (${sampleUuids});
 ${statements.join("\n")}
@@ -572,16 +615,15 @@ async function runPool(items, limit, worker) {
     await Promise.all(workers)
 }
 
-async function downloadSamples(samples) {
+async function downloadSampleFiles(samples) {
     const downloadStartedAt = now()
     const saved = []
     const failed = []
-    const relativePaths = new Map()
+    const relativePaths = allocateRelativePaths(samples)
     await runPool(samples, concurrency, async (sample) => {
         try {
-            const rel = uniqueRelativePath(sample.uuid, sampleRelativePath(sample))
+            const rel = relativePaths.get(sample.uuid)
             const abs = path.join(samplesDir, rel)
-            relativePaths.set(sample.uuid, rel)
             if (!existsSync(abs)) {
                 const url = sample.files?.[0]?.url
                 if (!url) throw new Error("missing audio url")
@@ -597,16 +639,25 @@ async function downloadSamples(samples) {
             failed.push({ sample, error: e })
         }
     })
-    const downloadedAt = now()
-    if (saved.length) {
-        upsertSamples(saved, relativePaths)
-    }
     return {
+        samples: saved,
         saved: saved.length,
         failed,
-        downloadMs: downloadedAt - downloadStartedAt,
-        dbMs: now() - downloadedAt,
+        relativePaths,
+        downloadMs: now() - downloadStartedAt,
     }
+}
+
+async function persistDownloaded(result) {
+    const startedAt = now()
+    if (result.samples.length) await upsertSamples(result.samples, result.relativePaths)
+    return now() - startedAt
+}
+
+async function downloadSamples(samples) {
+    const result = await downloadSampleFiles(samples)
+    const dbMs = await persistDownloaded(result)
+    return { ...result, dbMs }
 }
 
 async function setupGraphqlPage() {
@@ -764,7 +815,7 @@ async function processPack(page, jobId, pack) {
             variables: {
                 parent_asset_uuid: pack.uuid,
                 cursor,
-                limit: SAMPLE_PAGE_SIZE,
+                limit: samplePageSize,
             },
         })
         const result = json?.data?.assetsSearch
@@ -800,6 +851,7 @@ async function collectRandomMissingBatch(page, cursor) {
     let listed = 0
     let total = 0
     let nextCursor = cursor
+    let pages = 0
 
     while (collected.length < batchSize) {
         const json = await queryGraphql(page, {
@@ -808,7 +860,7 @@ async function collectRandomMissingBatch(page, cursor) {
                 parent_asset_uuid: null,
                 parent_asset_type: null,
                 cursor: nextCursor,
-                limit: SAMPLE_PAGE_SIZE,
+                limit: samplePageSize,
                 sort: "random",
                 order: "DESC",
                 random_seed: randomSeed,
@@ -816,6 +868,7 @@ async function collectRandomMissingBatch(page, cursor) {
         })
         const result = json?.data?.assetsSearch
         if (!result) throw new Error("missing assetsSearch")
+        pages++
         const items = result.items ?? []
         total = result.response_metadata?.records ?? total
         listed += items.length
@@ -830,35 +883,55 @@ async function collectRandomMissingBatch(page, cursor) {
         listed,
         total,
         cursor: nextCursor,
+        pages,
+    }
+}
+
+async function prepareRandomBatch(page, initialCursor) {
+    let cursor = initialCursor
+    while (true) {
+        const listingStartedAt = now()
+        const batch = await collectRandomMissingBatch(page, cursor)
+        const listingMs = now() - listingStartedAt
+        if (batch.items.length) {
+            const downloaded = await downloadSampleFiles(batch.items)
+            return { batch, downloaded, listingMs }
+        }
+        log(`random batch found no missing samples after listing ${batch.listed}; next=${batch.cursor ? "yes" : "no"}`)
+        if (!batch.cursor) return null
+        cursor = batch.cursor
     }
 }
 
 async function runRandomSamples(page) {
-    log(`random sample mode seed=${randomSeed} batchSize=${batchSize} concurrency=${concurrency}`)
-    let cursor = null
+    log(`random sample mode seed=${randomSeed} batchSize=${batchSize} pageSize=${samplePageSize} concurrency=${concurrency}`)
+    if (maxBatches <= 0) return
     let batches = 0
     let savedTotal = 0
-    while (batches < maxBatches) {
-        const listingStartedAt = now()
-        const batch = await collectRandomMissingBatch(page, cursor)
-        const listingMs = now() - listingStartedAt
-        if (!batch.items.length) {
-            log(`random batch found no missing samples after listing ${batch.listed}; next=${batch.cursor ? "yes" : "no"}`)
-            if (!batch.cursor) break
-            cursor = batch.cursor
-            continue
-        }
-        const result = await downloadSamples(batch.items)
+    let prepared = await prepareRandomBatch(page, null)
+    while (prepared && batches < maxBatches) {
+        const { batch, downloaded, listingMs } = prepared
+        const dbPromise = persistDownloaded(downloaded)
+        const nextPromise = batches + 1 < maxBatches && batch.cursor
+            ? prepareRandomBatch(page, batch.cursor).then(
+                (nextPrepared) => ({ nextPrepared }),
+                (error) => ({ error })
+            )
+            : null
+        const dbMs = await dbPromise
+        const result = { ...downloaded, dbMs }
         savedTotal += result.saved
         batches++
         log(
-            `random batch ${batches}: listed=${batch.listed} total=${batch.total} missing=${batch.items.length} saved=${result.saved} failed=${result.failed.length} sessionSaved=${savedTotal} listingMs=${listingMs} downloadMs=${result.downloadMs} dbMs=${result.dbMs} next=${batch.cursor ? "yes" : "no"}`
+            `random batch ${batches}: listed=${batch.listed} pages=${batch.pages} total=${batch.total} missing=${batch.items.length} saved=${result.saved} failed=${result.failed.length} sessionSaved=${savedTotal} listingMs=${listingMs} downloadMs=${result.downloadMs} dbMs=${result.dbMs} next=${batch.cursor ? "yes" : "no"}`
         )
         if (result.failed.length) {
             log(`first failure: ${result.failed[0].sample.uuid} ${result.failed[0].error?.message ?? result.failed[0].error}`)
         }
-        if (!batch.cursor) break
-        cursor = batch.cursor
+        if (!nextPromise) break
+        const nextResult = await nextPromise
+        if (nextResult.error) throw nextResult.error
+        prepared = nextResult.nextPrepared
     }
 }
 

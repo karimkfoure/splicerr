@@ -60,7 +60,7 @@ For large one-time mirrors, prefer the headless backfill runner:
 pnpm backfill:headless -- --samples-dir /Volumes/disco/splicerr --batch-size 1000 --concurrency 16
 ```
 
-By default it lists random samples globally, filters out anything already cached, and downloads/upserts batches from the terminal. Use `--mode packs` only when deliberately resuming the pack queue.
+By default it lists random samples globally, filters out anything already cached, and downloads/upserts batches from the terminal. It automatically prepares the next random batch while SQLite persists the current one. Use `--mode packs` only when deliberately resuming the pack queue.
 
 ## 💡 Recommended IDE Setup
 
