@@ -90,6 +90,17 @@ function sqliteExec(sql) {
     })
 }
 
+function assertDatabaseIntegrity() {
+    const rows = sqliteRows("PRAGMA quick_check;")
+    const result = rows.map((row) => row.join("\t")).filter(Boolean)
+    if (result.length !== 1 || result[0] !== "ok") {
+        throw new Error(
+            `SQLite integrity check failed; refusing to download or write:\n${result.slice(0, 20).join("\n") || "no result"}`
+        )
+    }
+    log("database integrity check ok")
+}
+
 function ensureMirrorTables() {
     sqliteExec(`
 CREATE TABLE IF NOT EXISTS mirror_jobs (
@@ -805,6 +816,7 @@ async function runRandomSamples(page) {
 }
 
 async function main() {
+    assertDatabaseIntegrity()
     ensureMirrorTables()
     const { browser, page } = await setupGraphqlPage()
     try {
