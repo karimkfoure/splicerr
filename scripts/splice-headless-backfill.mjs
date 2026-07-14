@@ -377,9 +377,14 @@ function uniqueRelativePath(uuid, rel) {
 function upsertSamples(samples, relativePaths) {
     if (!samples.length) return
     const statements = []
-    for (const sample of samples) {
+    const materializable = samples.filter((sample) => {
         const pack = sample.parents?.items?.[0]
-        if (!pack?.uuid || !pack?.name) continue
+        return Boolean(pack?.uuid && pack?.name)
+    })
+    if (!materializable.length) return
+    const sampleUuids = materializable.map((sample) => sqlValue(sample.uuid)).join(",")
+    for (const sample of materializable) {
+        const pack = sample.parents?.items?.[0]
         const relativePath = uniqueRelativePath(
             sample.uuid,
             relativePaths.get(sample.uuid)
@@ -422,8 +427,6 @@ ON CONFLICT(uuid) DO UPDATE SET
   audio_cached_at=excluded.audio_cached_at,
   pack_name=excluded.pack_name;
 
-DELETE FROM sample_tags WHERE sample_uuid=${sqlValue(sample.uuid)};
-DELETE FROM samples_fts WHERE sample_uuid=${sqlValue(sample.uuid)};
 INSERT INTO samples_fts (sample_uuid, name, display_name, pack_name)
 VALUES (${sqlValue(sample.uuid)}, ${sqlValue(sample.name)}, ${sqlValue(displayName)}, ${sqlValue(pack.name)});
 `)
@@ -437,7 +440,11 @@ VALUES (${sqlValue(sample.uuid)}, ${sqlValue(tag.uuid)});
 `)
         }
     }
-    sqliteExec(`BEGIN;\n${statements.join("\n")}\nCOMMIT;`)
+    sqliteExec(`BEGIN;
+DELETE FROM sample_tags WHERE sample_uuid IN (${sampleUuids});
+DELETE FROM samples_fts WHERE sample_uuid IN (${sampleUuids});
+${statements.join("\n")}
+COMMIT;`)
 }
 
 function resolvePackCoverUrl(pack) {
@@ -566,6 +573,7 @@ async function runPool(items, limit, worker) {
 }
 
 async function downloadSamples(samples) {
+    const downloadStartedAt = now()
     const saved = []
     const failed = []
     const relativePaths = new Map()
@@ -589,10 +597,16 @@ async function downloadSamples(samples) {
             failed.push({ sample, error: e })
         }
     })
+    const downloadedAt = now()
     if (saved.length) {
         upsertSamples(saved, relativePaths)
     }
-    return { saved: saved.length, failed }
+    return {
+        saved: saved.length,
+        failed,
+        downloadMs: downloadedAt - downloadStartedAt,
+        dbMs: now() - downloadedAt,
+    }
 }
 
 async function setupGraphqlPage() {
@@ -825,7 +839,9 @@ async function runRandomSamples(page) {
     let batches = 0
     let savedTotal = 0
     while (batches < maxBatches) {
+        const listingStartedAt = now()
         const batch = await collectRandomMissingBatch(page, cursor)
+        const listingMs = now() - listingStartedAt
         if (!batch.items.length) {
             log(`random batch found no missing samples after listing ${batch.listed}; next=${batch.cursor ? "yes" : "no"}`)
             if (!batch.cursor) break
@@ -836,7 +852,7 @@ async function runRandomSamples(page) {
         savedTotal += result.saved
         batches++
         log(
-            `random batch ${batches}: listed=${batch.listed} total=${batch.total} missing=${batch.items.length} saved=${result.saved} failed=${result.failed.length} sessionSaved=${savedTotal} next=${batch.cursor ? "yes" : "no"}`
+            `random batch ${batches}: listed=${batch.listed} total=${batch.total} missing=${batch.items.length} saved=${result.saved} failed=${result.failed.length} sessionSaved=${savedTotal} listingMs=${listingMs} downloadMs=${result.downloadMs} dbMs=${result.dbMs} next=${batch.cursor ? "yes" : "no"}`
         )
         if (result.failed.length) {
             log(`first failure: ${result.failed[0].sample.uuid} ${result.failed[0].error?.message ?? result.failed[0].error}`)
