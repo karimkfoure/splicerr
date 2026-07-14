@@ -27,6 +27,8 @@ if (!existsSync(dbPath)) {
     die(`Library DB does not exist: ${dbPath}`)
 }
 
+const sqliteBin = resolveSqliteBin()
+
 const now = () => Date.now()
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
@@ -56,6 +58,35 @@ function parseArgs(argv) {
     return out
 }
 
+function resolveSqliteBin() {
+    const candidates = [
+        process.env.SQLITE3_BIN,
+        "/opt/homebrew/opt/sqlite/bin/sqlite3",
+        "/usr/local/opt/sqlite/bin/sqlite3",
+        "sqlite3",
+    ].filter(Boolean)
+    const rejected = []
+
+    for (const candidate of [...new Set(candidates)]) {
+        try {
+            const options = execFileSync(candidate, [":memory:", "PRAGMA compile_options;"], {
+                encoding: "utf8",
+            })
+            if (/CCCRYPT|HAS_CODEC|CODEC=/i.test(options)) {
+                rejected.push(`${candidate} (Apple codec build)`)
+                continue
+            }
+            return candidate
+        } catch (error) {
+            if (error?.code !== "ENOENT") rejected.push(`${candidate} (${error.message})`)
+        }
+    }
+
+    throw new Error(
+        `No standard sqlite3 binary found. Install Homebrew sqlite or set SQLITE3_BIN. Rejected: ${rejected.join(", ") || "none"}`
+    )
+}
+
 function sqlValue(value) {
     if (value == null) return "NULL"
     if (typeof value === "number") return Number.isFinite(value) ? String(value) : "NULL"
@@ -63,14 +94,14 @@ function sqlValue(value) {
 }
 
 function sqlite(sql) {
-    return execFileSync("sqlite3", [dbPath, `PRAGMA busy_timeout=30000;\n${sql}`], {
+    return execFileSync(sqliteBin, [dbPath, `PRAGMA busy_timeout=30000;\n${sql}`], {
         encoding: "utf8",
         maxBuffer: 1024 * 1024 * 64,
     }).trim()
 }
 
 function sqliteRows(sql) {
-    const out = execFileSync("sqlite3", [dbPath], {
+    const out = execFileSync(sqliteBin, [dbPath], {
         input: `.mode tabs\nPRAGMA busy_timeout=30000;\n${sql}`,
         encoding: "utf8",
         maxBuffer: 1024 * 1024 * 64,
@@ -83,7 +114,7 @@ function sqliteRows(sql) {
 }
 
 function sqliteExec(sql) {
-    execFileSync("sqlite3", [dbPath], {
+    execFileSync(sqliteBin, [dbPath], {
         input: `PRAGMA busy_timeout=30000;\n${sql}`,
         encoding: "utf8",
         maxBuffer: 1024 * 1024 * 64,
@@ -816,6 +847,7 @@ async function runRandomSamples(page) {
 }
 
 async function main() {
+    log(`sqlite binary ${sqliteBin}`)
     assertDatabaseIntegrity()
     ensureMirrorTables()
     const { browser, page } = await setupGraphqlPage()
