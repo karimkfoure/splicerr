@@ -11,6 +11,7 @@ const DEFAULT_SAMPLES_DIR = "/Volumes/disco/splicerr"
 const DEFAULT_SAMPLE_PAGE_SIZE = 100
 const PACK_PAGE_SIZE = 50
 const DOWNLOAD_TIMEOUT_MS = 4000
+const DOWNLOAD_RETRY_TIMEOUT_MS = 2000
 const DOWNLOAD_MAX_ATTEMPTS = 2
 
 const args = parseArgs(process.argv.slice(2))
@@ -676,7 +677,9 @@ async function fetchScrambledSample(url) {
         attempts++
         try {
             const response = await fetch(url, {
-                signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS),
+                signal: AbortSignal.timeout(
+                    attempts === 1 ? DOWNLOAD_TIMEOUT_MS : DOWNLOAD_RETRY_TIMEOUT_MS
+                ),
             })
             if (!response.ok) {
                 const error = new Error(`download HTTP ${response.status}`)
