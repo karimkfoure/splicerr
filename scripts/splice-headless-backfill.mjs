@@ -3,6 +3,7 @@ import { chromium } from "playwright"
 import { execFileSync, spawn } from "node:child_process"
 import { existsSync, mkdirSync, writeFileSync } from "node:fs"
 import path from "node:path"
+import { createInterface } from "node:readline"
 
 const SPLICE_GRAPHQL_URL = "https://surfaces-graphql.splice.com/graphql"
 const DEFAULT_SAMPLES_DIR = "/Volumes/disco/splicerr"
@@ -379,6 +380,33 @@ function existingUuids(uuids) {
         `SELECT uuid FROM samples WHERE audio_cached_at > 0 AND uuid IN (${values});`
     )
     return new Set(rows.map((r) => r[0]))
+}
+
+async function loadCachedUuids() {
+    const child = spawn(
+        sqliteBin,
+        [dbPath, "SELECT uuid FROM samples WHERE audio_cached_at > 0;"],
+        { stdio: ["ignore", "pipe", "pipe"] }
+    )
+    const uuids = new Set()
+    let stderr = ""
+    child.stderr.setEncoding("utf8")
+    child.stderr.on("data", (chunk) => {
+        if (stderr.length < 64 * 1024) stderr += chunk
+    })
+    const closed = new Promise((resolve, reject) => {
+        child.on("error", reject)
+        child.on("close", (code) => {
+            if (code === 0) resolve()
+            else reject(new Error(`sqlite3 UUID cache exited ${code}: ${stderr.trim()}`))
+        })
+    })
+    const lines = createInterface({ input: child.stdout, crlfDelay: Infinity })
+    for await (const uuid of lines) {
+        if (uuid) uuids.add(uuid)
+    }
+    await closed
+    return uuids
 }
 
 function suffixedRelativePath(uuid, rel, fullUuid = false) {
@@ -864,7 +892,7 @@ async function processPack(page, jobId, pack) {
     }
 }
 
-async function prepareRandomBatch(page, cursor) {
+async function prepareRandomBatch(page, cursor, knownUuids) {
     const prepareStartedAt = now()
     const listingStartedAt = now()
     const collected = []
@@ -897,10 +925,13 @@ async function prepareRandomBatch(page, cursor) {
         const items = result.items ?? []
         total = result.response_metadata?.records ?? total
         listed += items.length
-        const existing = existingUuids(items.map((item) => item.uuid))
-        const missing = items
-            .filter((item) => !existing.has(item.uuid))
-            .slice(0, batchSize - collected.length)
+        const missing = []
+        for (const item of items) {
+            if (missing.length >= batchSize - collected.length) break
+            if (knownUuids.has(item.uuid)) continue
+            knownUuids.add(item.uuid)
+            missing.push(item)
+        }
         if (missing.length) {
             const allocated = allocateRelativePaths(missing, pathOwners)
             if (downloadStartedAt == null) downloadStartedAt = now()
@@ -950,14 +981,17 @@ async function prepareRandomBatch(page, cursor) {
 async function runRandomSamples(page) {
     log(`random sample mode seed=${randomSeed} batchSize=${batchSize} pageSize=${samplePageSize} concurrency=${concurrency}`)
     if (maxBatches <= 0) return
+    const cacheStartedAt = now()
+    const knownUuids = await loadCachedUuids()
+    log(`UUID cache loaded count=${knownUuids.size} ms=${now() - cacheStartedAt}`)
     let batches = 0
     let savedTotal = 0
-    let prepared = await prepareRandomBatch(page, null)
+    let prepared = await prepareRandomBatch(page, null, knownUuids)
     while (prepared && batches < maxBatches) {
         const { batch, downloaded, listingMs, prepareMs } = prepared
         const dbPromise = persistDownloaded(downloaded)
         const nextPromise = batches + 1 < maxBatches && batch.cursor
-            ? prepareRandomBatch(page, batch.cursor).then(
+            ? prepareRandomBatch(page, batch.cursor, knownUuids).then(
                 (nextPrepared) => ({ nextPrepared }),
                 (error) => ({ error })
             )
