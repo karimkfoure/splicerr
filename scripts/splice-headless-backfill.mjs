@@ -10,6 +10,8 @@ const DEFAULT_SAMPLES_DIR = "/Volumes/disco/splicerr"
 
 const DEFAULT_SAMPLE_PAGE_SIZE = 100
 const PACK_PAGE_SIZE = 50
+const DOWNLOAD_TIMEOUT_MS = 4000
+const DOWNLOAD_MAX_ATTEMPTS = 2
 
 const args = parseArgs(process.argv.slice(2))
 const samplesDir = args.samplesDir ?? DEFAULT_SAMPLES_DIR
@@ -665,24 +667,67 @@ function createTaskLimiter(limit) {
     })
 }
 
+async function fetchScrambledSample(url) {
+    let attempts = 0
+    let timeouts = 0
+    let lastError
+
+    while (attempts < DOWNLOAD_MAX_ATTEMPTS) {
+        attempts++
+        try {
+            const response = await fetch(url, {
+                signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS),
+            })
+            if (!response.ok) {
+                const error = new Error(`download HTTP ${response.status}`)
+                error.retryable = response.status === 408 || response.status === 429 || response.status >= 500
+                throw error
+            }
+            return {
+                scrambled: Buffer.from(await response.arrayBuffer()),
+                attempts,
+                timeouts,
+            }
+        } catch (error) {
+            lastError = error
+            if (error?.name === "TimeoutError" || error?.name === "AbortError") timeouts++
+            if (attempts >= DOWNLOAD_MAX_ATTEMPTS || error?.retryable === false) break
+            await sleep(100)
+        }
+    }
+
+    lastError.downloadAttempts = attempts
+    lastError.downloadTimeouts = timeouts
+    throw lastError
+}
+
 async function downloadSampleFile(sample, relativePath) {
     const startedAt = now()
+    let attempts = 0
+    let timeouts = 0
     try {
         const abs = path.join(samplesDir, relativePath)
         if (!existsSync(abs)) {
             const url = sample.files?.[0]?.url
             if (!url) throw new Error("missing audio url")
-            const response = await fetch(url)
-            if (!response.ok) throw new Error(`download HTTP ${response.status}`)
-            const scrambled = Buffer.from(await response.arrayBuffer())
-            const mp3 = descramble(scrambled)
+            const fetched = await fetchScrambledSample(url)
+            attempts = fetched.attempts
+            timeouts = fetched.timeouts
+            const mp3 = descramble(fetched.scrambled)
             mkdirSync(path.dirname(abs), { recursive: true })
             writeFileSync(abs, mp3)
-            return { sample, durationMs: now() - startedAt, reused: false }
+            return { sample, durationMs: now() - startedAt, reused: false, attempts, timeouts }
         }
-        return { sample, durationMs: now() - startedAt, reused: true }
+        return { sample, durationMs: now() - startedAt, reused: true, attempts, timeouts }
     } catch (error) {
-        return { sample, error, durationMs: now() - startedAt, reused: false }
+        return {
+            sample,
+            error,
+            durationMs: now() - startedAt,
+            reused: false,
+            attempts: error?.downloadAttempts ?? attempts,
+            timeouts: error?.downloadTimeouts ?? timeouts,
+        }
     }
 }
 
@@ -706,6 +751,8 @@ function summarizeDownloadResults(results) {
         p99Ms: percentile(durations, 0.99),
         maxMs: durations.at(-1) ?? 0,
         failedMaxMs: Math.max(0, ...failedDurations),
+        retriedCount: network.filter((result) => result.attempts > 1).length,
+        timeoutCount: network.reduce((sum, result) => sum + result.timeouts, 0),
     }
 }
 
@@ -1070,7 +1117,7 @@ async function runRandomSamples(pages) {
         savedTotal += result.saved
         batches++
         log(
-            `random batch ${batches}: listed=${batch.listed} pages=${batch.pages} streamPages=${batch.streamPages.join("+")} total=${batch.total} missing=${batch.items.length} saved=${result.saved} failed=${result.failed.length} sessionSaved=${savedTotal} prepareMs=${prepareMs} listingMs=${listingMs} downloadMs=${result.downloadMs} downloadTailMs=${result.downloadTailMs} dbMs=${result.dbMs} downloadP50Ms=${result.stats.p50Ms} downloadP95Ms=${result.stats.p95Ms} downloadP99Ms=${result.stats.p99Ms} downloadMaxMs=${result.stats.maxMs} failedMaxMs=${result.stats.failedMaxMs} reused=${result.stats.reusedCount} next=${hasNext ? "yes" : "no"}`
+            `random batch ${batches}: listed=${batch.listed} pages=${batch.pages} streamPages=${batch.streamPages.join("+")} total=${batch.total} missing=${batch.items.length} saved=${result.saved} failed=${result.failed.length} sessionSaved=${savedTotal} prepareMs=${prepareMs} listingMs=${listingMs} downloadMs=${result.downloadMs} downloadTailMs=${result.downloadTailMs} dbMs=${result.dbMs} downloadP50Ms=${result.stats.p50Ms} downloadP95Ms=${result.stats.p95Ms} downloadP99Ms=${result.stats.p99Ms} downloadMaxMs=${result.stats.maxMs} failedMaxMs=${result.stats.failedMaxMs} retried=${result.stats.retriedCount} timeouts=${result.stats.timeoutCount} reused=${result.stats.reusedCount} next=${hasNext ? "yes" : "no"}`
         )
         if (result.failed.length) {
             log(`first failure: ${result.failed[0].sample.uuid} durationMs=${result.failed[0].durationMs} ${result.failed[0].error?.message ?? result.failed[0].error}`)
