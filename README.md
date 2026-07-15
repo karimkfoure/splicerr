@@ -64,6 +64,8 @@ By default ten random cursor streams list samples in parallel, deduplicate again
 
 Random-stream seeds and cursors are checkpointed in SQLite after every committed batch. Restarting the command resumes the same pass; after all streams reach the end, the next run starts a fresh random pass to pick up catalog changes. Remote removals never delete local files automatically.
 
+Transient GraphQL throttling and Cloudflare `5xx` responses retry with short exponential backoff, which prevents late-pass listing work from being discarded by a single gateway error.
+
 ### Headless backfill performance log
 
 Representative local runs, normalized to 1,000 saved samples. Network conditions and the cached/missing ratio vary, so treat these as historical throughput markers rather than a formal benchmark.

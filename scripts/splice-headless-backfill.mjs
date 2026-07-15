@@ -861,18 +861,32 @@ async function setupGraphqlPages(count) {
 
 async function queryGraphql(page, body) {
     return await page.evaluate(async ({ body }) => {
-        const response = await fetch("/graphql", {
-            method: "POST",
-            headers: {
-                "content-type": "application/json",
-                "apollo-require-preflight": "true",
-                "x-apollo-operation-name": body.operationName,
-            },
-            body: JSON.stringify(body),
-        })
-        const text = await response.text()
-        if (!response.ok) throw new Error(`HTTP ${response.status}: ${text.slice(0, 200)}`)
-        return JSON.parse(text)
+        let lastError
+        for (let attempt = 0; attempt < 4; attempt++) {
+            try {
+                const response = await fetch("/graphql", {
+                    method: "POST",
+                    headers: {
+                        "content-type": "application/json",
+                        "apollo-require-preflight": "true",
+                        "x-apollo-operation-name": body.operationName,
+                    },
+                    body: JSON.stringify(body),
+                })
+                const text = await response.text()
+                if (!response.ok) {
+                    const error = new Error(`HTTP ${response.status}: ${text.slice(0, 200)}`)
+                    error.retryable = response.status === 429 || response.status >= 500
+                    throw error
+                }
+                return JSON.parse(text)
+            } catch (error) {
+                lastError = error
+                if (error.retryable === false || attempt === 3) throw error
+                await new Promise((resolve) => setTimeout(resolve, 500 * 2 ** attempt))
+            }
+        }
+        throw lastError
     }, { body })
 }
 
