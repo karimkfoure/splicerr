@@ -95,6 +95,7 @@ Experiments that did not win:
 | Explicit keep-alive, pipeline 1 | 6.72 | Node's default fetch pool was faster |
 | Explicit keep-alive, pipeline 4 | 14.66 | HTTP/1.1 head-of-line blocking |
 | Network-only concurrency slots | 6.64 | More queued work without more throughput |
+| Disable automatic IP-family fallback | 6.24 | IPv4-first with fallback remained faster |
 
 ## 💡 Recommended IDE Setup
 
