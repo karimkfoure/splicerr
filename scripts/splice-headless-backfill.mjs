@@ -13,8 +13,8 @@ const DEFAULT_SAMPLES_DIR = "/Volumes/disco/splicerr"
 
 const DEFAULT_SAMPLE_PAGE_SIZE = 100
 const PACK_PAGE_SIZE = 50
-const DOWNLOAD_TIMEOUT_MS = 4000
-const DOWNLOAD_RETRY_TIMEOUT_MS = 2000
+const DOWNLOAD_TIMEOUT_MS = 3000
+const DOWNLOAD_RETRY_TIMEOUT_MS = 1500
 const DOWNLOAD_MAX_ATTEMPTS = 2
 
 const args = parseArgs(process.argv.slice(2))
