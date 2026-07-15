@@ -72,7 +72,8 @@ Representative local runs with 1,000-sample batches and concurrency 50. Network 
 | [c044eb9](https://github.com/karimkfoure/splicerr/commit/c044eb9) | Batch FTS cleanup | 45.6 | 78.9k | 6.4x | 6.4x |
 | [db95f1f](https://github.com/karimkfoure/splicerr/commit/db95f1f) | Batch paths + DB/listing pipeline | 32.3 | 111.5k | 1.4x | 9.0x |
 | [9149522](https://github.com/karimkfoure/splicerr/commit/9149522) | Stream downloads during listing | 27.1 | 132.8k | 1.2x | 10.8x |
-| [f07047a](https://github.com/karimkfoure/splicerr/commit/f07047a) | Cache mirrored UUIDs in memory | **26.3** | **136.7k** | 1.03x | **11.1x** |
+| [f07047a](https://github.com/karimkfoure/splicerr/commit/f07047a) | Cache mirrored UUIDs in memory | 26.3 | 136.7k | 1.03x | 11.1x |
+| [9e8e2f3](https://github.com/karimkfoure/splicerr/commit/9e8e2f3) | Two parallel GraphQL cursor streams | **16.0** | **225.0k** | 1.65x | **18.3x** |
 
 Experiments that did not win:
 
