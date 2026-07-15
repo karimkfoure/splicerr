@@ -60,7 +60,7 @@ For large one-time mirrors, prefer the headless backfill runner:
 pnpm backfill:headless -- --samples-dir /Volumes/disco/splicerr --batch-size 1000 --concurrency 50
 ```
 
-By default it lists random samples globally, filters out anything already cached, and streams missing samples into the download pool while it continues listing. It also prepares the next random batch while SQLite persists the current one. Use `--mode packs` only when deliberately resuming the pack queue.
+By default two random cursor streams list samples in parallel, deduplicate against the local UUID cache, and feed missing samples into one shared download pool. The runner also prepares the next batch while SQLite persists the current one. Use `--mode packs` only when deliberately resuming the pack queue.
 
 ### Headless backfill performance log
 

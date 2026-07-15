@@ -60,6 +60,14 @@ function parseArgs(argv) {
     return out
 }
 
+function deriveRandomSeed(seed, streamIndex) {
+    let hash = BigInt(streamIndex + 1)
+    for (const char of seed) {
+        hash = (hash * 131n + BigInt(char.charCodeAt(0))) % BigInt(Number.MAX_SAFE_INTEGER)
+    }
+    return String(hash || 1n)
+}
+
 function resolveSqliteBin() {
     const candidates = [
         process.env.SQLITE3_BIN,
@@ -706,11 +714,16 @@ async function downloadSamples(samples) {
     return { ...result, dbMs }
 }
 
-async function setupGraphqlPage() {
+async function setupGraphqlPages(count) {
     const browser = await chromium.launch({ headless: true })
-    const page = await browser.newPage()
-    await page.goto(SPLICE_GRAPHQL_URL, { waitUntil: "domcontentloaded" })
-    return { browser, page }
+    const pages = await Promise.all(
+        Array.from({ length: count }, async () => {
+            const page = await browser.newPage()
+            await page.goto(SPLICE_GRAPHQL_URL, { waitUntil: "domcontentloaded" })
+            return page
+        })
+    )
+    return { browser, pages }
 }
 
 async function queryGraphql(page, body) {
@@ -892,31 +905,25 @@ async function processPack(page, jobId, pack) {
     }
 }
 
-async function prepareRandomBatch(page, cursor, knownUuids) {
-    const prepareStartedAt = now()
-    const listingStartedAt = now()
-    const collected = []
-    const relativePaths = new Map()
-    const pathOwners = new Map()
-    const downloadTasks = []
-    const limitDownload = createTaskLimiter(concurrency)
+async function collectRandomStream(page, state, seed, target, knownUuids, shared) {
+    let cursor = state.cursor
+    let done = state.done
+    let accepted = 0
     let listed = 0
-    let total = 0
-    let nextCursor = cursor
     let pages = 0
-    let downloadStartedAt = null
+    let total = 0
 
-    while (collected.length < batchSize) {
+    while (!done && accepted < target) {
         const json = await queryGraphql(page, {
             ...SamplesSearchCursor,
             variables: {
                 parent_asset_uuid: null,
                 parent_asset_type: null,
-                cursor: nextCursor,
+                cursor,
                 limit: samplePageSize,
                 sort: "random",
                 order: "DESC",
-                random_seed: randomSeed,
+                random_seed: seed,
             },
         })
         const result = json?.data?.assetsSearch
@@ -927,47 +934,78 @@ async function prepareRandomBatch(page, cursor, knownUuids) {
         listed += items.length
         const missing = []
         for (const item of items) {
-            if (missing.length >= batchSize - collected.length) break
+            if (accepted + missing.length >= target) break
             if (knownUuids.has(item.uuid)) continue
             knownUuids.add(item.uuid)
             missing.push(item)
         }
         if (missing.length) {
-            const allocated = allocateRelativePaths(missing, pathOwners)
-            if (downloadStartedAt == null) downloadStartedAt = now()
+            const allocated = allocateRelativePaths(missing, shared.pathOwners)
+            if (shared.downloadStartedAt == null) shared.downloadStartedAt = now()
             for (const sample of missing) {
                 const relativePath = allocated.get(sample.uuid)
-                relativePaths.set(sample.uuid, relativePath)
-                collected.push(sample)
-                downloadTasks.push(
-                    limitDownload(() => downloadSampleFile(sample, relativePath))
+                shared.relativePaths.set(sample.uuid, relativePath)
+                shared.collected.push(sample)
+                shared.downloadTasks.push(
+                    shared.limitDownload(() => downloadSampleFile(sample, relativePath))
                 )
             }
+            accepted += missing.length
         }
-        nextCursor = result.response_metadata?.next ?? null
-        if (!nextCursor || items.length === 0) break
+        cursor = result.response_metadata?.next ?? null
+        done = !cursor || items.length === 0
     }
 
+    return { state: { cursor, done }, accepted, listed, pages, total }
+}
+
+async function prepareRandomBatch(pages, states, seeds, knownUuids) {
+    const prepareStartedAt = now()
+    const listingStartedAt = now()
+    const shared = {
+        collected: [],
+        relativePaths: new Map(),
+        pathOwners: new Map(),
+        downloadTasks: [],
+        limitDownload: createTaskLimiter(concurrency),
+        downloadStartedAt: null,
+    }
+    const firstTarget = Math.ceil(batchSize / 2)
+    const targets = [firstTarget, batchSize - firstTarget]
+    const streams = await Promise.all(
+        pages.map((page, index) =>
+            collectRandomStream(
+                page,
+                states[index],
+                seeds[index],
+                targets[index],
+                knownUuids,
+                shared
+            )
+        )
+    )
+
     const listingFinishedAt = now()
-    const results = await Promise.all(downloadTasks)
+    const results = await Promise.all(shared.downloadTasks)
     const downloadFinishedAt = now()
     const saved = results.filter((result) => !result.error).map((result) => result.sample)
     const failed = results.filter((result) => result.error)
-    if (!collected.length) return null
+    if (!shared.collected.length) return null
 
     const batch = {
-        items: collected,
-        listed,
-        total,
-        cursor: nextCursor,
-        pages,
+        items: shared.collected,
+        listed: streams.reduce((sum, stream) => sum + stream.listed, 0),
+        total: Math.max(...streams.map((stream) => stream.total)),
+        states: streams.map((stream) => stream.state),
+        pages: streams.reduce((sum, stream) => sum + stream.pages, 0),
+        streamPages: streams.map((stream) => stream.pages),
     }
     const downloaded = {
         samples: saved,
         saved: saved.length,
         failed,
-        relativePaths,
-        downloadMs: downloadStartedAt == null ? 0 : downloadFinishedAt - downloadStartedAt,
+        relativePaths: shared.relativePaths,
+        downloadMs: shared.downloadStartedAt == null ? 0 : downloadFinishedAt - shared.downloadStartedAt,
         downloadTailMs: downloadFinishedAt - listingFinishedAt,
     }
     return {
@@ -978,20 +1016,25 @@ async function prepareRandomBatch(page, cursor, knownUuids) {
     }
 }
 
-async function runRandomSamples(page) {
-    log(`random sample mode seed=${randomSeed} batchSize=${batchSize} pageSize=${samplePageSize} concurrency=${concurrency}`)
+async function runRandomSamples(pages) {
+    const seeds = pages.map((_, index) =>
+        index === 0 ? randomSeed : deriveRandomSeed(randomSeed, index)
+    )
+    log(`random sample mode seeds=${seeds.join(",")} streams=${pages.length} batchSize=${batchSize} pageSize=${samplePageSize} concurrency=${concurrency}`)
     if (maxBatches <= 0) return
     const cacheStartedAt = now()
     const knownUuids = await loadCachedUuids()
     log(`UUID cache loaded count=${knownUuids.size} ms=${now() - cacheStartedAt}`)
     let batches = 0
     let savedTotal = 0
-    let prepared = await prepareRandomBatch(page, null, knownUuids)
+    const initialStates = pages.map(() => ({ cursor: null, done: false }))
+    let prepared = await prepareRandomBatch(pages, initialStates, seeds, knownUuids)
     while (prepared && batches < maxBatches) {
         const { batch, downloaded, listingMs, prepareMs } = prepared
         const dbPromise = persistDownloaded(downloaded)
-        const nextPromise = batches + 1 < maxBatches && batch.cursor
-            ? prepareRandomBatch(page, batch.cursor, knownUuids).then(
+        const hasNext = batch.states.some((state) => !state.done)
+        const nextPromise = batches + 1 < maxBatches && hasNext
+            ? prepareRandomBatch(pages, batch.states, seeds, knownUuids).then(
                 (nextPrepared) => ({ nextPrepared }),
                 (error) => ({ error })
             )
@@ -1001,7 +1044,7 @@ async function runRandomSamples(page) {
         savedTotal += result.saved
         batches++
         log(
-            `random batch ${batches}: listed=${batch.listed} pages=${batch.pages} total=${batch.total} missing=${batch.items.length} saved=${result.saved} failed=${result.failed.length} sessionSaved=${savedTotal} prepareMs=${prepareMs} listingMs=${listingMs} downloadMs=${result.downloadMs} downloadTailMs=${result.downloadTailMs} dbMs=${result.dbMs} next=${batch.cursor ? "yes" : "no"}`
+            `random batch ${batches}: listed=${batch.listed} pages=${batch.pages} streamPages=${batch.streamPages.join("+")} total=${batch.total} missing=${batch.items.length} saved=${result.saved} failed=${result.failed.length} sessionSaved=${savedTotal} prepareMs=${prepareMs} listingMs=${listingMs} downloadMs=${result.downloadMs} downloadTailMs=${result.downloadTailMs} dbMs=${result.dbMs} next=${hasNext ? "yes" : "no"}`
         )
         if (result.failed.length) {
             log(`first failure: ${result.failed[0].sample.uuid} ${result.failed[0].error?.message ?? result.failed[0].error}`)
@@ -1017,7 +1060,8 @@ async function main() {
     log(`sqlite binary ${sqliteBin}`)
     assertDatabaseIntegrity()
     ensureMirrorTables()
-    const { browser, page } = await setupGraphqlPage()
+    const { browser, pages } = await setupGraphqlPages(mode === "packs" ? 1 : 2)
+    const page = pages[0]
     try {
         if (mode === "packs") {
             const jobId = getJobId()
@@ -1045,7 +1089,7 @@ async function main() {
             }
             summarize(jobId)
         } else {
-            await runRandomSamples(page)
+            await runRandomSamples(pages)
         }
     } finally {
         await browser.close()
