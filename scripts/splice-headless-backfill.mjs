@@ -755,6 +755,12 @@ function summarizeDownloadResults(results) {
         maxMs: durations.at(-1) ?? 0,
         failedMaxMs: Math.max(0, ...failedDurations),
         retriedCount: network.filter((result) => result.attempts > 1).length,
+        retryRecoveredCount: network.filter(
+            (result) => result.attempts > 1 && !result.error
+        ).length,
+        retryFailedCount: network.filter(
+            (result) => result.attempts > 1 && result.error
+        ).length,
         timeoutCount: network.reduce((sum, result) => sum + result.timeouts, 0),
     }
 }
@@ -1045,8 +1051,10 @@ async function prepareRandomBatch(pages, states, seeds, knownUuids) {
         limitDownload: createTaskLimiter(concurrency),
         downloadStartedAt: null,
     }
-    const firstTarget = Math.ceil(batchSize / 2)
-    const targets = [firstTarget, batchSize - firstTarget]
+    const baseTarget = Math.floor(batchSize / pages.length)
+    const targets = pages.map((_, index) =>
+        baseTarget + (index < batchSize % pages.length ? 1 : 0)
+    )
     const streams = await Promise.all(
         pages.map((page, index) =>
             collectRandomStream(
@@ -1120,7 +1128,7 @@ async function runRandomSamples(pages) {
         savedTotal += result.saved
         batches++
         log(
-            `random batch ${batches}: listed=${batch.listed} pages=${batch.pages} streamPages=${batch.streamPages.join("+")} total=${batch.total} missing=${batch.items.length} saved=${result.saved} failed=${result.failed.length} sessionSaved=${savedTotal} prepareMs=${prepareMs} listingMs=${listingMs} downloadMs=${result.downloadMs} downloadTailMs=${result.downloadTailMs} dbMs=${result.dbMs} downloadP50Ms=${result.stats.p50Ms} downloadP95Ms=${result.stats.p95Ms} downloadP99Ms=${result.stats.p99Ms} downloadMaxMs=${result.stats.maxMs} failedMaxMs=${result.stats.failedMaxMs} retried=${result.stats.retriedCount} timeouts=${result.stats.timeoutCount} reused=${result.stats.reusedCount} next=${hasNext ? "yes" : "no"}`
+            `random batch ${batches}: listed=${batch.listed} pages=${batch.pages} streamPages=${batch.streamPages.join("+")} total=${batch.total} missing=${batch.items.length} saved=${result.saved} failed=${result.failed.length} sessionSaved=${savedTotal} prepareMs=${prepareMs} listingMs=${listingMs} downloadMs=${result.downloadMs} downloadTailMs=${result.downloadTailMs} dbMs=${result.dbMs} downloadP50Ms=${result.stats.p50Ms} downloadP95Ms=${result.stats.p95Ms} downloadP99Ms=${result.stats.p99Ms} downloadMaxMs=${result.stats.maxMs} failedMaxMs=${result.stats.failedMaxMs} retried=${result.stats.retriedCount} retryRecovered=${result.stats.retryRecoveredCount} retryFailed=${result.stats.retryFailedCount} timeouts=${result.stats.timeoutCount} reused=${result.stats.reusedCount} next=${hasNext ? "yes" : "no"}`
         )
         if (result.failed.length) {
             log(`first failure: ${result.failed[0].sample.uuid} durationMs=${result.failed[0].durationMs} ${result.failed[0].error?.message ?? result.failed[0].error}`)
@@ -1136,7 +1144,7 @@ async function main() {
     log(`sqlite binary ${sqliteBin}`)
     assertDatabaseIntegrity()
     ensureMirrorTables()
-    const { browser, pages } = await setupGraphqlPages(mode === "packs" ? 1 : 2)
+    const { browser, pages } = await setupGraphqlPages(mode === "packs" ? 1 : 10)
     const page = pages[0]
     try {
         if (mode === "packs") {
