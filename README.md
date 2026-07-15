@@ -57,10 +57,29 @@ Set **samples directory** in app settings to enable the local mirror (MP3 + SQLi
 For large one-time mirrors, prefer the headless backfill runner:
 
 ```bash
-pnpm backfill:headless -- --samples-dir /Volumes/disco/splicerr --batch-size 1000 --concurrency 16
+pnpm backfill:headless -- --samples-dir /Volumes/disco/splicerr --batch-size 1000 --concurrency 50
 ```
 
 By default it lists random samples globally, filters out anything already cached, and streams missing samples into the download pool while it continues listing. It also prepares the next random batch while SQLite persists the current one. Use `--mode packs` only when deliberately resuming the pack queue.
+
+### Headless backfill performance log
+
+Representative local runs with 1,000-sample batches and concurrency 50. Network conditions and the cached/missing ratio vary, so treat these as historical throughput markers rather than a formal benchmark.
+
+| Version | Change | Seconds / 1k | Samples / hour | Incremental | vs. baseline |
+|---|---|---:|---:|---:|---:|
+| [e256832](https://github.com/karimkfoure/splicerr/commit/e256832) | Standard SQLite baseline; per-sample FTS cleanup | 292.0 | 12.3k | — | 1.0x |
+| [c044eb9](https://github.com/karimkfoure/splicerr/commit/c044eb9) | Batch FTS cleanup | 45.6 | 78.9k | 6.4x | 6.4x |
+| [db95f1f](https://github.com/karimkfoure/splicerr/commit/db95f1f) | Batch paths + DB/listing pipeline | 32.3 | 111.5k | 1.4x | 9.0x |
+| [9149522](https://github.com/karimkfoure/splicerr/commit/9149522) | Stream downloads during listing | **27.1** | **132.8k** | 1.2x | **10.8x** |
+
+Experiments that did not win:
+
+| Experiment | Seconds / 1k | Result |
+|---|---:|---|
+| Concurrency 25 | 39.2 | Downloads underutilized |
+| Concurrency 100 | 40.4 | More network/disk contention |
+| GraphQL page size 200/500 | No change | Splice caps cursor pages at 100 |
 
 ## 💡 Recommended IDE Setup
 
