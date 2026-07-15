@@ -387,7 +387,7 @@ function suffixedRelativePath(uuid, rel, fullUuid = false) {
     return `${base}_${fullUuid ? uuid : uuid.slice(0, 8)}${ext}`
 }
 
-function allocateRelativePaths(samples) {
+function allocateRelativePaths(samples, owners = new Map()) {
     const candidates = samples.map((sample) => {
         const base = sampleRelativePath(sample)
         return {
@@ -397,12 +397,13 @@ function allocateRelativePaths(samples) {
         }
     })
     const paths = [...new Set(candidates.flatMap(({ base, short }) => [base, short]))]
-    const owners = new Map()
     if (paths.length) {
         const rows = sqliteRows(
             `SELECT relative_audio_path, uuid FROM samples WHERE relative_audio_path IN (${paths.map(sqlValue).join(",")});`
         )
-        for (const [relativePath, uuid] of rows) owners.set(relativePath, uuid)
+        for (const [relativePath, uuid] of rows) {
+            if (!owners.has(relativePath)) owners.set(relativePath, uuid)
+        }
     }
 
     const allocated = new Map()
@@ -604,41 +605,58 @@ function descramblePass(startIndex, data, encodingBlock, dataSize) {
     return startIndex
 }
 
-async function runPool(items, limit, worker) {
-    let next = 0
-    const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
-        while (next < items.length) {
-            const item = items[next++]
-            await worker(item)
+function createTaskLimiter(limit) {
+    let active = 0
+    const queue = []
+
+    const drain = () => {
+        while (active < limit && queue.length) {
+            const { task, resolve, reject } = queue.shift()
+            active++
+            Promise.resolve()
+                .then(task)
+                .then(resolve, reject)
+                .finally(() => {
+                    active--
+                    drain()
+                })
         }
+    }
+
+    return (task) => new Promise((resolve, reject) => {
+        queue.push({ task, resolve, reject })
+        drain()
     })
-    await Promise.all(workers)
+}
+
+async function downloadSampleFile(sample, relativePath) {
+    try {
+        const abs = path.join(samplesDir, relativePath)
+        if (!existsSync(abs)) {
+            const url = sample.files?.[0]?.url
+            if (!url) throw new Error("missing audio url")
+            const response = await fetch(url)
+            if (!response.ok) throw new Error(`download HTTP ${response.status}`)
+            const scrambled = Buffer.from(await response.arrayBuffer())
+            const mp3 = descramble(scrambled)
+            mkdirSync(path.dirname(abs), { recursive: true })
+            writeFileSync(abs, mp3)
+        }
+        return { sample }
+    } catch (error) {
+        return { sample, error }
+    }
 }
 
 async function downloadSampleFiles(samples) {
     const downloadStartedAt = now()
-    const saved = []
-    const failed = []
     const relativePaths = allocateRelativePaths(samples)
-    await runPool(samples, concurrency, async (sample) => {
-        try {
-            const rel = relativePaths.get(sample.uuid)
-            const abs = path.join(samplesDir, rel)
-            if (!existsSync(abs)) {
-                const url = sample.files?.[0]?.url
-                if (!url) throw new Error("missing audio url")
-                const response = await fetch(url)
-                if (!response.ok) throw new Error(`download HTTP ${response.status}`)
-                const scrambled = Buffer.from(await response.arrayBuffer())
-                const mp3 = descramble(scrambled)
-                mkdirSync(path.dirname(abs), { recursive: true })
-                writeFileSync(abs, mp3)
-            }
-            saved.push(sample)
-        } catch (e) {
-            failed.push({ sample, error: e })
-        }
-    })
+    const limitTask = createTaskLimiter(concurrency)
+    const results = await Promise.all(samples.map((sample) =>
+        limitTask(() => downloadSampleFile(sample, relativePaths.get(sample.uuid)))
+    ))
+    const saved = results.filter((result) => !result.error).map((result) => result.sample)
+    const failed = results.filter((result) => result.error)
     return {
         samples: saved,
         saved: saved.length,
@@ -846,12 +864,19 @@ async function processPack(page, jobId, pack) {
     }
 }
 
-async function collectRandomMissingBatch(page, cursor) {
+async function prepareRandomBatch(page, cursor) {
+    const prepareStartedAt = now()
+    const listingStartedAt = now()
     const collected = []
+    const relativePaths = new Map()
+    const pathOwners = new Map()
+    const downloadTasks = []
+    const limitDownload = createTaskLimiter(concurrency)
     let listed = 0
     let total = 0
     let nextCursor = cursor
     let pages = 0
+    let downloadStartedAt = null
 
     while (collected.length < batchSize) {
         const json = await queryGraphql(page, {
@@ -873,33 +898,52 @@ async function collectRandomMissingBatch(page, cursor) {
         total = result.response_metadata?.records ?? total
         listed += items.length
         const existing = existingUuids(items.map((item) => item.uuid))
-        collected.push(...items.filter((item) => !existing.has(item.uuid)))
+        const missing = items
+            .filter((item) => !existing.has(item.uuid))
+            .slice(0, batchSize - collected.length)
+        if (missing.length) {
+            const allocated = allocateRelativePaths(missing, pathOwners)
+            if (downloadStartedAt == null) downloadStartedAt = now()
+            for (const sample of missing) {
+                const relativePath = allocated.get(sample.uuid)
+                relativePaths.set(sample.uuid, relativePath)
+                collected.push(sample)
+                downloadTasks.push(
+                    limitDownload(() => downloadSampleFile(sample, relativePath))
+                )
+            }
+        }
         nextCursor = result.response_metadata?.next ?? null
         if (!nextCursor || items.length === 0) break
     }
 
-    return {
-        items: collected.slice(0, batchSize),
+    const listingFinishedAt = now()
+    const results = await Promise.all(downloadTasks)
+    const downloadFinishedAt = now()
+    const saved = results.filter((result) => !result.error).map((result) => result.sample)
+    const failed = results.filter((result) => result.error)
+    if (!collected.length) return null
+
+    const batch = {
+        items: collected,
         listed,
         total,
         cursor: nextCursor,
         pages,
     }
-}
-
-async function prepareRandomBatch(page, initialCursor) {
-    let cursor = initialCursor
-    while (true) {
-        const listingStartedAt = now()
-        const batch = await collectRandomMissingBatch(page, cursor)
-        const listingMs = now() - listingStartedAt
-        if (batch.items.length) {
-            const downloaded = await downloadSampleFiles(batch.items)
-            return { batch, downloaded, listingMs }
-        }
-        log(`random batch found no missing samples after listing ${batch.listed}; next=${batch.cursor ? "yes" : "no"}`)
-        if (!batch.cursor) return null
-        cursor = batch.cursor
+    const downloaded = {
+        samples: saved,
+        saved: saved.length,
+        failed,
+        relativePaths,
+        downloadMs: downloadStartedAt == null ? 0 : downloadFinishedAt - downloadStartedAt,
+        downloadTailMs: downloadFinishedAt - listingFinishedAt,
+    }
+    return {
+        batch,
+        downloaded,
+        listingMs: listingFinishedAt - listingStartedAt,
+        prepareMs: downloadFinishedAt - prepareStartedAt,
     }
 }
 
@@ -910,7 +954,7 @@ async function runRandomSamples(page) {
     let savedTotal = 0
     let prepared = await prepareRandomBatch(page, null)
     while (prepared && batches < maxBatches) {
-        const { batch, downloaded, listingMs } = prepared
+        const { batch, downloaded, listingMs, prepareMs } = prepared
         const dbPromise = persistDownloaded(downloaded)
         const nextPromise = batches + 1 < maxBatches && batch.cursor
             ? prepareRandomBatch(page, batch.cursor).then(
@@ -923,7 +967,7 @@ async function runRandomSamples(page) {
         savedTotal += result.saved
         batches++
         log(
-            `random batch ${batches}: listed=${batch.listed} pages=${batch.pages} total=${batch.total} missing=${batch.items.length} saved=${result.saved} failed=${result.failed.length} sessionSaved=${savedTotal} listingMs=${listingMs} downloadMs=${result.downloadMs} dbMs=${result.dbMs} next=${batch.cursor ? "yes" : "no"}`
+            `random batch ${batches}: listed=${batch.listed} pages=${batch.pages} total=${batch.total} missing=${batch.items.length} saved=${result.saved} failed=${result.failed.length} sessionSaved=${savedTotal} prepareMs=${prepareMs} listingMs=${listingMs} downloadMs=${result.downloadMs} downloadTailMs=${result.downloadTailMs} dbMs=${result.dbMs} next=${batch.cursor ? "yes" : "no"}`
         )
         if (result.failed.length) {
             log(`first failure: ${result.failed[0].sample.uuid} ${result.failed[0].error?.message ?? result.failed[0].error}`)
