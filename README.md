@@ -96,6 +96,7 @@ Experiments that did not win:
 | 10 streams, batch 4k, concurrency 100 | **6.32** | Best operational balance |
 | 10 streams, batch 5k, concurrency 100 | 6.31 | Flat gain; more DB/tail pressure |
 | 10 streams, batch 3k, concurrency 150 | 6.75 | Higher p95 and more timeouts |
+| 10 streams, batch 4k, concurrency 80 | 6.94 | Lower p95, but download tail doubled |
 | 20 streams, batch 3k, concurrency 75 | 7.82 | Listing improves; download/DB contention wins |
 | Explicit keep-alive, pipeline 1 | 6.72 | Node's default fetch pool was faster |
 | Explicit keep-alive, pipeline 4 | 14.66 | HTTP/1.1 head-of-line blocking |
