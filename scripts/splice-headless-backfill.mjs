@@ -4,6 +4,9 @@ import { execFileSync, spawn } from "node:child_process"
 import { existsSync, mkdirSync, writeFileSync } from "node:fs"
 import path from "node:path"
 import { createInterface } from "node:readline"
+import { setDefaultResultOrder } from "node:dns"
+
+setDefaultResultOrder("ipv4first")
 
 const SPLICE_GRAPHQL_URL = "https://surfaces-graphql.splice.com/graphql"
 const DEFAULT_SAMPLES_DIR = "/Volumes/disco/splicerr"
