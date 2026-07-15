@@ -210,7 +210,49 @@ CREATE TABLE IF NOT EXISTS mirror_failures (
   error TEXT NOT NULL,
   created_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS random_backfill_checkpoint (
+  stream_index INTEGER PRIMARY KEY,
+  stream_count INTEGER NOT NULL,
+  seed TEXT NOT NULL,
+  cursor TEXT,
+  done INTEGER NOT NULL DEFAULT 0,
+  updated_at INTEGER NOT NULL
+);
 `)
+}
+
+function saveRandomCheckpoint(seeds, states) {
+    sqliteExec(`BEGIN;
+${randomCheckpointSql(seeds, states)}
+COMMIT;`)
+}
+
+function randomCheckpointSql(seeds, states) {
+    const timestamp = now()
+    const rows = seeds.map((seed, index) => `
+INSERT INTO random_backfill_checkpoint
+  (stream_index, stream_count, seed, cursor, done, updated_at)
+VALUES
+  (${index}, ${seeds.length}, ${sqlValue(seed)}, ${sqlValue(states[index].cursor)}, ${states[index].done ? 1 : 0}, ${timestamp});`)
+    return `
+DELETE FROM random_backfill_checkpoint;
+${rows.join("\n")}`
+}
+
+function loadRandomCheckpoint(streamCount) {
+    const rows = sqliteRows(`
+SELECT stream_index, seed, cursor, done
+FROM random_backfill_checkpoint
+WHERE stream_count=${streamCount}
+ORDER BY stream_index;`)
+    const valid = rows.length === streamCount && rows.every(
+        (row, index) => Number(row[0]) === index
+    )
+    if (!valid || rows.every((row) => row[3] === "1")) return null
+    return {
+        seeds: rows.map((row) => row[1]),
+        states: rows.map((row) => ({ cursor: row[2] || null, done: row[3] === "1" })),
+    }
 }
 
 function getJobId() {
@@ -463,8 +505,11 @@ function allocateRelativePaths(samples, owners = new Map()) {
     return allocated
 }
 
-async function upsertSamples(samples, relativePaths) {
-    if (!samples.length) return
+async function upsertSamples(samples, relativePaths, extraSql = "") {
+    if (!samples.length) {
+        if (extraSql) await sqliteExecAsync(`BEGIN;\n${extraSql}\nCOMMIT;`)
+        return
+    }
     const statements = []
     const materializable = samples.filter((sample) => {
         const pack = sample.parents?.items?.[0]
@@ -530,6 +575,7 @@ VALUES (${sqlValue(sample.uuid)}, ${sqlValue(tag.uuid)});
 DELETE FROM sample_tags WHERE sample_uuid IN (${sampleUuids});
 DELETE FROM samples_fts WHERE sample_uuid IN (${sampleUuids});
 ${statements.join("\n")}
+${extraSql}
 COMMIT;`)
 }
 
@@ -786,9 +832,12 @@ async function downloadSampleFiles(samples) {
     }
 }
 
-async function persistDownloaded(result) {
+async function persistDownloaded(result, checkpoint) {
     const startedAt = now()
-    if (result.samples.length) await upsertSamples(result.samples, result.relativePaths)
+    const checkpointSql = checkpoint
+        ? randomCheckpointSql(checkpoint.seeds, checkpoint.states)
+        : ""
+    await upsertSamples(result.samples, result.relativePaths, checkpointSql)
     return now() - startedAt
 }
 
@@ -1104,21 +1153,39 @@ async function prepareRandomBatch(pages, states, seeds, knownUuids) {
 }
 
 async function runRandomSamples(pages) {
-    const seeds = pages.map((_, index) =>
+    let checkpoint = loadRandomCheckpoint(pages.length)
+    let seeds = checkpoint?.seeds ?? pages.map((_, index) =>
         index === 0 ? randomSeed : deriveRandomSeed(randomSeed, index)
     )
-    log(`random sample mode seeds=${seeds.join(",")} streams=${pages.length} batchSize=${batchSize} pageSize=${samplePageSize} concurrency=${concurrency}`)
+    let initialStates = checkpoint?.states ?? pages.map(() => ({ cursor: null, done: false }))
+    if (!checkpoint) saveRandomCheckpoint(seeds, initialStates)
+    log(`random sample mode checkpoint=${checkpoint ? "resumed" : "fresh"} seeds=${seeds.join(",")} streams=${pages.length} batchSize=${batchSize} pageSize=${samplePageSize} concurrency=${concurrency}`)
     if (maxBatches <= 0) return
     const cacheStartedAt = now()
     const knownUuids = await loadCachedUuids()
     log(`UUID cache loaded count=${knownUuids.size} ms=${now() - cacheStartedAt}`)
     let batches = 0
     let savedTotal = 0
-    const initialStates = pages.map(() => ({ cursor: null, done: false }))
-    let prepared = await prepareRandomBatch(pages, initialStates, seeds, knownUuids)
+    let prepared
+    try {
+        prepared = await prepareRandomBatch(pages, initialStates, seeds, knownUuids)
+    } catch (error) {
+        if (!checkpoint) throw error
+        log(`saved cursors rejected; starting fresh pass: ${error.message ?? error}`)
+        checkpoint = null
+        seeds = pages.map((_, index) =>
+            index === 0 ? randomSeed : deriveRandomSeed(randomSeed, index)
+        )
+        initialStates = pages.map(() => ({ cursor: null, done: false }))
+        saveRandomCheckpoint(seeds, initialStates)
+        prepared = await prepareRandomBatch(pages, initialStates, seeds, knownUuids)
+    }
     while (prepared && batches < maxBatches) {
         const { batch, downloaded, listingMs, prepareMs } = prepared
-        const dbPromise = persistDownloaded(downloaded)
+        const dbPromise = persistDownloaded(downloaded, {
+            seeds,
+            states: batch.states,
+        })
         const hasNext = batch.states.some((state) => !state.done)
         const nextPromise = batches + 1 < maxBatches && hasNext
             ? prepareRandomBatch(pages, batch.states, seeds, knownUuids).then(

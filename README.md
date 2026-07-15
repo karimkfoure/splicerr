@@ -62,6 +62,8 @@ pnpm backfill:headless -- --samples-dir /Volumes/disco/splicerr --batch-size 400
 
 By default ten random cursor streams list samples in parallel, deduplicate against the local UUID cache, and feed missing samples into one shared download pool. The runner also prepares the next batch while SQLite persists the current one. Use `--mode packs` only when deliberately resuming the pack queue.
 
+Random-stream seeds and cursors are checkpointed in SQLite after every committed batch. Restarting the command resumes the same pass; after all streams reach the end, the next run starts a fresh random pass to pick up catalog changes. Remote removals never delete local files automatically.
+
 ### Headless backfill performance log
 
 Representative local runs, normalized to 1,000 saved samples. Network conditions and the cached/missing ratio vary, so treat these as historical throughput markers rather than a formal benchmark.
