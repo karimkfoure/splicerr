@@ -77,9 +77,12 @@ Representative local runs, normalized to 1,000 saved samples. Network conditions
 | [f07047a](https://github.com/karimkfoure/splicerr/commit/f07047a) | Cache mirrored UUIDs in memory | 26.3 | 136.7k | 1.03x | 11.1x |
 | [9e8e2f3](https://github.com/karimkfoure/splicerr/commit/9e8e2f3) | Two parallel GraphQL cursor streams | **18.5** | **194.4k** | 1.42x | **15.8x** |
 | [27aa838](https://github.com/karimkfoure/splicerr/commit/27aa838) | Ten streams + 4k batch + concurrency 100 | 6.32 | 569.5k | 2.93x | 46.2x |
-| [74b0010](https://github.com/karimkfoure/splicerr/commit/74b0010) | Prefer IPv4 for CDN downloads | **5.75** | **626.1k** | **1.10x** | **50.8x** |
+| [74b0010](https://github.com/karimkfoure/splicerr/commit/74b0010) | Prefer IPv4 for CDN downloads | 5.75 | 626.1k | 1.10x | 50.8x |
+| [d9c1b6e](https://github.com/karimkfoure/splicerr/commit/d9c1b6e) | Tighten download timeouts to 3s + 1.5s | **5.65** | **636.9k** | **1.02x** | **51.7x** |
 
 The bounded retry in [b44722a](https://github.com/karimkfoure/splicerr/commit/b44722a) reduced average download-tail latency from 2.34s to 1.78s in its comparison run. Later retry instrumentation recovered all 28 retried downloads in the 2k/100 matrix run.
+
+Durable cursor resume landed in [abed845](https://github.com/karimkfoure/splicerr/commit/abed845). Its five-batch validation sustained 6.13s/1k under slower network conditions while reducing average DB time, confirming that checkpointing inside the existing sample transaction adds no measurable writer overhead.
 
 Experiments that did not win:
 
@@ -98,6 +101,7 @@ Experiments that did not win:
 | Explicit keep-alive, pipeline 4 | 14.66 | HTTP/1.1 head-of-line blocking |
 | Network-only concurrency slots | 6.64 | More queued work without more throughput |
 | Disable automatic IP-family fallback | 6.24 | IPv4-first with fallback remained faster |
+| Download timeout 3s + retry 2s | 6.23 | Longer retry lost the tighter-tail win |
 
 ## 💡 Recommended IDE Setup
 
