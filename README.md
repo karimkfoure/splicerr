@@ -57,14 +57,14 @@ Set **samples directory** in app settings to enable the local mirror (MP3 + SQLi
 For large one-time mirrors, prefer the headless backfill runner:
 
 ```bash
-pnpm backfill:headless -- --samples-dir /Volumes/disco/splicerr --batch-size 1000 --concurrency 50
+pnpm backfill:headless -- --samples-dir /Volumes/disco/splicerr --batch-size 4000 --concurrency 100
 ```
 
-By default two random cursor streams list samples in parallel, deduplicate against the local UUID cache, and feed missing samples into one shared download pool. The runner also prepares the next batch while SQLite persists the current one. Use `--mode packs` only when deliberately resuming the pack queue.
+By default ten random cursor streams list samples in parallel, deduplicate against the local UUID cache, and feed missing samples into one shared download pool. The runner also prepares the next batch while SQLite persists the current one. Use `--mode packs` only when deliberately resuming the pack queue.
 
 ### Headless backfill performance log
 
-Representative local runs with 1,000-sample batches and concurrency 50. Network conditions and the cached/missing ratio vary, so treat these as historical throughput markers rather than a formal benchmark.
+Representative local runs, normalized to 1,000 saved samples. Network conditions and the cached/missing ratio vary, so treat these as historical throughput markers rather than a formal benchmark.
 
 | Version | Change | Seconds / 1k | Samples / hour | Incremental | vs. baseline |
 |---|---|---:|---:|---:|---:|
@@ -74,6 +74,9 @@ Representative local runs with 1,000-sample batches and concurrency 50. Network 
 | [9149522](https://github.com/karimkfoure/splicerr/commit/9149522) | Stream downloads during listing | 27.1 | 132.8k | 1.2x | 10.8x |
 | [f07047a](https://github.com/karimkfoure/splicerr/commit/f07047a) | Cache mirrored UUIDs in memory | 26.3 | 136.7k | 1.03x | 11.1x |
 | [9e8e2f3](https://github.com/karimkfoure/splicerr/commit/9e8e2f3) | Two parallel GraphQL cursor streams | **18.5** | **194.4k** | 1.42x | **15.8x** |
+| [27aa838](https://github.com/karimkfoure/splicerr/commit/27aa838) | Ten streams + 4k batch + concurrency 100 | **6.32** | **569.5k** | **2.93x** | **46.2x** |
+
+The bounded retry in [b44722a](https://github.com/karimkfoure/splicerr/commit/b44722a) reduced average download-tail latency from 2.34s to 1.78s in its comparison run. Later retry instrumentation recovered all 28 retried downloads in the 2k/100 matrix run.
 
 Experiments that did not win:
 
@@ -82,6 +85,12 @@ Experiments that did not win:
 | Concurrency 25 | 39.2 | Downloads underutilized |
 | Concurrency 100 | 40.4 | More network/disk contention |
 | GraphQL page size 200/500 | No change | Splice caps cursor pages at 100 |
+| 4 streams, batch 3k, concurrency 75 | 8.30 | Good intermediate scaling point |
+| 10 streams, batch 3k, concurrency 100 | 6.50 | Listing and downloads scale together |
+| 10 streams, batch 4k, concurrency 100 | **6.32** | Best operational balance |
+| 10 streams, batch 5k, concurrency 100 | 6.31 | Flat gain; more DB/tail pressure |
+| 10 streams, batch 3k, concurrency 150 | 6.75 | Higher p95 and more timeouts |
+| 20 streams, batch 3k, concurrency 75 | 7.82 | Listing improves; download/DB contention wins |
 
 ## 💡 Recommended IDE Setup
 
