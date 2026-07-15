@@ -666,6 +666,7 @@ function createTaskLimiter(limit) {
 }
 
 async function downloadSampleFile(sample, relativePath) {
+    const startedAt = now()
     try {
         const abs = path.join(samplesDir, relativePath)
         if (!existsSync(abs)) {
@@ -677,10 +678,34 @@ async function downloadSampleFile(sample, relativePath) {
             const mp3 = descramble(scrambled)
             mkdirSync(path.dirname(abs), { recursive: true })
             writeFileSync(abs, mp3)
+            return { sample, durationMs: now() - startedAt, reused: false }
         }
-        return { sample }
+        return { sample, durationMs: now() - startedAt, reused: true }
     } catch (error) {
-        return { sample, error }
+        return { sample, error, durationMs: now() - startedAt, reused: false }
+    }
+}
+
+function percentile(sorted, value) {
+    if (!sorted.length) return 0
+    const index = Math.min(sorted.length - 1, Math.ceil(sorted.length * value) - 1)
+    return sorted[index]
+}
+
+function summarizeDownloadResults(results) {
+    const network = results.filter((result) => !result.reused)
+    const durations = network.map((result) => result.durationMs).sort((a, b) => a - b)
+    const failedDurations = network
+        .filter((result) => result.error)
+        .map((result) => result.durationMs)
+    return {
+        networkCount: network.length,
+        reusedCount: results.length - network.length,
+        p50Ms: percentile(durations, 0.5),
+        p95Ms: percentile(durations, 0.95),
+        p99Ms: percentile(durations, 0.99),
+        maxMs: durations.at(-1) ?? 0,
+        failedMaxMs: Math.max(0, ...failedDurations),
     }
 }
 
@@ -1007,6 +1032,7 @@ async function prepareRandomBatch(pages, states, seeds, knownUuids) {
         relativePaths: shared.relativePaths,
         downloadMs: shared.downloadStartedAt == null ? 0 : downloadFinishedAt - shared.downloadStartedAt,
         downloadTailMs: downloadFinishedAt - listingFinishedAt,
+        stats: summarizeDownloadResults(results),
     }
     return {
         batch,
@@ -1044,10 +1070,10 @@ async function runRandomSamples(pages) {
         savedTotal += result.saved
         batches++
         log(
-            `random batch ${batches}: listed=${batch.listed} pages=${batch.pages} streamPages=${batch.streamPages.join("+")} total=${batch.total} missing=${batch.items.length} saved=${result.saved} failed=${result.failed.length} sessionSaved=${savedTotal} prepareMs=${prepareMs} listingMs=${listingMs} downloadMs=${result.downloadMs} downloadTailMs=${result.downloadTailMs} dbMs=${result.dbMs} next=${hasNext ? "yes" : "no"}`
+            `random batch ${batches}: listed=${batch.listed} pages=${batch.pages} streamPages=${batch.streamPages.join("+")} total=${batch.total} missing=${batch.items.length} saved=${result.saved} failed=${result.failed.length} sessionSaved=${savedTotal} prepareMs=${prepareMs} listingMs=${listingMs} downloadMs=${result.downloadMs} downloadTailMs=${result.downloadTailMs} dbMs=${result.dbMs} downloadP50Ms=${result.stats.p50Ms} downloadP95Ms=${result.stats.p95Ms} downloadP99Ms=${result.stats.p99Ms} downloadMaxMs=${result.stats.maxMs} failedMaxMs=${result.stats.failedMaxMs} reused=${result.stats.reusedCount} next=${hasNext ? "yes" : "no"}`
         )
         if (result.failed.length) {
-            log(`first failure: ${result.failed[0].sample.uuid} ${result.failed[0].error?.message ?? result.failed[0].error}`)
+            log(`first failure: ${result.failed[0].sample.uuid} durationMs=${result.failed[0].durationMs} ${result.failed[0].error?.message ?? result.failed[0].error}`)
         }
         if (!nextPromise) break
         const nextResult = await nextPromise
