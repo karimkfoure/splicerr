@@ -74,7 +74,8 @@ Representative local runs, normalized to 1,000 saved samples. Network conditions
 | [9149522](https://github.com/karimkfoure/splicerr/commit/9149522) | Stream downloads during listing | 27.1 | 132.8k | 1.2x | 10.8x |
 | [f07047a](https://github.com/karimkfoure/splicerr/commit/f07047a) | Cache mirrored UUIDs in memory | 26.3 | 136.7k | 1.03x | 11.1x |
 | [9e8e2f3](https://github.com/karimkfoure/splicerr/commit/9e8e2f3) | Two parallel GraphQL cursor streams | **18.5** | **194.4k** | 1.42x | **15.8x** |
-| [27aa838](https://github.com/karimkfoure/splicerr/commit/27aa838) | Ten streams + 4k batch + concurrency 100 | **6.32** | **569.5k** | **2.93x** | **46.2x** |
+| [27aa838](https://github.com/karimkfoure/splicerr/commit/27aa838) | Ten streams + 4k batch + concurrency 100 | 6.32 | 569.5k | 2.93x | 46.2x |
+| [74b0010](https://github.com/karimkfoure/splicerr/commit/74b0010) | Prefer IPv4 for CDN downloads | **5.75** | **626.1k** | **1.10x** | **50.8x** |
 
 The bounded retry in [b44722a](https://github.com/karimkfoure/splicerr/commit/b44722a) reduced average download-tail latency from 2.34s to 1.78s in its comparison run. Later retry instrumentation recovered all 28 retried downloads in the 2k/100 matrix run.
 
@@ -91,6 +92,9 @@ Experiments that did not win:
 | 10 streams, batch 5k, concurrency 100 | 6.31 | Flat gain; more DB/tail pressure |
 | 10 streams, batch 3k, concurrency 150 | 6.75 | Higher p95 and more timeouts |
 | 20 streams, batch 3k, concurrency 75 | 7.82 | Listing improves; download/DB contention wins |
+| Explicit keep-alive, pipeline 1 | 6.72 | Node's default fetch pool was faster |
+| Explicit keep-alive, pipeline 4 | 14.66 | HTTP/1.1 head-of-line blocking |
+| Network-only concurrency slots | 6.64 | More queued work without more throughput |
 
 ## 💡 Recommended IDE Setup
 
