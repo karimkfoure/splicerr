@@ -177,5 +177,114 @@ pub fn migrate(conn: &Connection) -> Result<(), String> {
         conn.execute("INSERT INTO schema_migrations (version) VALUES (6)", [])
             .map_err(|e| e.to_string())?;
     }
+    if v < 7 {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS library_tag_counts (
+                tag_uuid TEXT PRIMARY KEY,
+                sample_count INTEGER NOT NULL
+            );
+
+            CREATE TRIGGER IF NOT EXISTS library_tag_counts_after_insert
+            AFTER INSERT ON sample_tags
+            WHEN EXISTS (
+                SELECT 1 FROM samples s
+                WHERE s.uuid = NEW.sample_uuid AND s.audio_cached_at > 0
+            )
+            BEGIN
+                INSERT INTO library_tag_counts (tag_uuid, sample_count)
+                VALUES (NEW.tag_uuid, 1)
+                ON CONFLICT(tag_uuid) DO UPDATE
+                SET sample_count = sample_count + 1;
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS library_tag_counts_after_delete
+            AFTER DELETE ON sample_tags
+            WHEN EXISTS (
+                SELECT 1 FROM samples s
+                WHERE s.uuid = OLD.sample_uuid AND s.audio_cached_at > 0
+            )
+            BEGIN
+                UPDATE library_tag_counts
+                SET sample_count = sample_count - 1
+                WHERE tag_uuid = OLD.tag_uuid;
+                DELETE FROM library_tag_counts WHERE sample_count <= 0;
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS library_tag_counts_sample_cached
+            AFTER UPDATE OF audio_cached_at ON samples
+            WHEN OLD.audio_cached_at <= 0 AND NEW.audio_cached_at > 0
+            BEGIN
+                INSERT INTO library_tag_counts (tag_uuid, sample_count)
+                SELECT tag_uuid, 1 FROM sample_tags
+                WHERE sample_uuid = NEW.uuid
+                ON CONFLICT(tag_uuid) DO UPDATE
+                SET sample_count = sample_count + 1;
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS library_tag_counts_sample_uncached
+            AFTER UPDATE OF audio_cached_at ON samples
+            WHEN OLD.audio_cached_at > 0 AND NEW.audio_cached_at <= 0
+            BEGIN
+                UPDATE library_tag_counts
+                SET sample_count = sample_count - 1
+                WHERE tag_uuid IN (
+                    SELECT tag_uuid FROM sample_tags WHERE sample_uuid = NEW.uuid
+                );
+                DELETE FROM library_tag_counts WHERE sample_count <= 0;
+            END;",
+        )
+        .map_err(|e| e.to_string())?;
+        conn.execute("INSERT INTO schema_migrations (version) VALUES (7)", [])
+            .map_err(|e| e.to_string())?;
+    }
+    if v < 8 {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS library_stats (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                cached_sample_count INTEGER NOT NULL
+            );
+            INSERT OR REPLACE INTO library_stats (id, cached_sample_count)
+            SELECT 1, COUNT(*) FROM samples WHERE audio_cached_at > 0;
+
+            CREATE TRIGGER IF NOT EXISTS library_stats_sample_insert
+            AFTER INSERT ON samples
+            WHEN NEW.audio_cached_at > 0
+            BEGIN
+                UPDATE library_stats
+                SET cached_sample_count = cached_sample_count + 1
+                WHERE id = 1;
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS library_stats_sample_delete
+            AFTER DELETE ON samples
+            WHEN OLD.audio_cached_at > 0
+            BEGIN
+                UPDATE library_stats
+                SET cached_sample_count = cached_sample_count - 1
+                WHERE id = 1;
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS library_stats_sample_cached
+            AFTER UPDATE OF audio_cached_at ON samples
+            WHEN OLD.audio_cached_at <= 0 AND NEW.audio_cached_at > 0
+            BEGIN
+                UPDATE library_stats
+                SET cached_sample_count = cached_sample_count + 1
+                WHERE id = 1;
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS library_stats_sample_uncached
+            AFTER UPDATE OF audio_cached_at ON samples
+            WHEN OLD.audio_cached_at > 0 AND NEW.audio_cached_at <= 0
+            BEGIN
+                UPDATE library_stats
+                SET cached_sample_count = cached_sample_count - 1
+                WHERE id = 1;
+            END;",
+        )
+        .map_err(|e| e.to_string())?;
+        conn.execute("INSERT INTO schema_migrations (version) VALUES (8)", [])
+            .map_err(|e| e.to_string())?;
+    }
     Ok(())
 }

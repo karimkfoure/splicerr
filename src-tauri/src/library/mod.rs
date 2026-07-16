@@ -6,18 +6,18 @@ use schema::migrate;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tauri::State;
 use tokio::sync::Semaphore;
 
 pub struct LibraryState {
-    conn: Mutex<Option<Connection>>,
+    conn: Arc<Mutex<Option<Connection>>>,
 }
 
 impl Default for LibraryState {
     fn default() -> Self {
         Self {
-            conn: Mutex::new(None),
+            conn: Arc::new(Mutex::new(None)),
         }
     }
 }
@@ -716,27 +716,48 @@ pub struct TagSummaryEntry {
 }
 
 #[tauri::command]
-pub fn library_search(
-    state: State<LibraryState>,
+pub async fn library_search(
+    state: State<'_, LibraryState>,
     params: LibrarySearchParams,
 ) -> Result<LibrarySearchResponse, String> {
-    with_conn(&state, |conn| search::search(conn, params))
+    let state = Arc::clone(&state.conn);
+    tauri::async_runtime::spawn_blocking(move || {
+        let guard = state.lock().map_err(|e| e.to_string())?;
+        let conn = guard.as_ref().ok_or("Library database is not open")?;
+        search::search(conn, params)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-pub fn library_tag_summary(
-    state: State<LibraryState>,
+pub async fn library_tag_summary(
+    state: State<'_, LibraryState>,
     params: LibrarySearchParams,
 ) -> Result<Vec<TagSummaryEntry>, String> {
-    with_conn(&state, |conn| search::tag_summary(conn, params))
+    let state = Arc::clone(&state.conn);
+    tauri::async_runtime::spawn_blocking(move || {
+        let guard = state.lock().map_err(|e| e.to_string())?;
+        let conn = guard.as_ref().ok_or("Library database is not open")?;
+        search::tag_summary(conn, params)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-pub fn library_list_packs(
-    state: State<LibraryState>,
+pub async fn library_list_packs(
+    state: State<'_, LibraryState>,
     params: LibraryListPacksParams,
 ) -> Result<Vec<PackListEntry>, String> {
-    with_conn(&state, |conn| search::list_packs(conn, &params))
+    let state = Arc::clone(&state.conn);
+    tauri::async_runtime::spawn_blocking(move || {
+        let guard = state.lock().map_err(|e| e.to_string())?;
+        let conn = guard.as_ref().ok_or("Library database is not open")?;
+        search::list_packs(conn, &params)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 fn pack_cover_source_url_from_json(pack: &serde_json::Value) -> Option<String> {
@@ -885,17 +906,14 @@ mod ingest {
             }
         }
 
-        tx.execute(
-            "DELETE FROM samples_fts WHERE sample_uuid = ?1",
-            params![uuid],
-        )
-        .map_err(|e| e.to_string())?;
-        tx.execute(
-            "INSERT INTO samples_fts (sample_uuid, name, display_name, pack_name)
-             VALUES (?1, ?2, ?3, ?4)",
-            params![uuid, name, display_name, pack_name],
-        )
-        .map_err(|e| e.to_string())?;
+        if existing_path.is_none() {
+            tx.execute(
+                "INSERT INTO samples_fts (sample_uuid, name, display_name, pack_name)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![uuid, name, display_name, pack_name],
+            )
+            .map_err(|e| e.to_string())?;
+        }
 
         tx.commit().map_err(|e| e.to_string())?;
         Ok(())
@@ -918,16 +936,37 @@ mod search {
     use super::*;
     use rusqlite::types::Value;
 
+    fn is_unfiltered(params: &LibrarySearchParams) -> bool {
+        params.tags.is_empty()
+            && !params.favorites_only
+            && params.query.as_deref().unwrap_or("").trim().is_empty()
+            && params.asset_category_slug.is_none()
+            && params.key.is_none()
+            && params.chord_type.is_none()
+            && params.min_bpm.is_none()
+            && params.max_bpm.is_none()
+            && params.bpm.is_none()
+            && params.pack_uuid.is_none()
+    }
+
     pub fn search(
         conn: &Connection,
         params: LibrarySearchParams,
     ) -> Result<LibrarySearchResponse, String> {
         let (where_sql, where_params) = build_filter(&params)?;
-        let total: i64 = query_scalar(
-            conn,
-            &format!("SELECT COUNT(*) FROM samples s WHERE {}", where_sql),
-            &where_params,
-        )?;
+        let total: i64 = if is_unfiltered(&params) {
+            query_scalar(
+                conn,
+                "SELECT cached_sample_count FROM library_stats WHERE id = 1",
+                &[],
+            )?
+        } else {
+            query_scalar(
+                conn,
+                &format!("SELECT COUNT(*) FROM samples s WHERE {}", where_sql),
+                &where_params,
+            )?
+        };
 
         let order = if params.order.eq_ignore_ascii_case("ASC") {
             "ASC"
@@ -965,7 +1004,7 @@ mod search {
             .filter_map(|uuid| row_to_asset(conn, uuid, &params.samples_dir).ok())
             .collect();
 
-        let tag_summary = tag_summary(conn, params.clone())?;
+        let tag_summary = tag_summary(conn, params)?;
 
         Ok(LibrarySearchResponse {
             items,
@@ -976,39 +1015,36 @@ mod search {
 
     pub fn tag_summary(
         conn: &Connection,
-        params: LibrarySearchParams,
+        _params: LibrarySearchParams,
     ) -> Result<Vec<TagSummaryEntry>, String> {
-        let (where_sql, where_params) = build_filter(&params)?;
-        let sql = format!(
-            "SELECT t.uuid, t.label, COUNT(DISTINCT s.uuid) as cnt
-             FROM samples s
-             INNER JOIN sample_tags st ON st.sample_uuid = s.uuid
-             INNER JOIN tags t ON t.uuid = st.tag_uuid
-             WHERE {}
-             GROUP BY t.uuid, t.label
-             ORDER BY cnt DESC
+        query_rows(
+            conn,
+            "SELECT t.uuid, t.label, c.sample_count
+             FROM library_tag_counts c
+             JOIN tags t ON t.uuid = c.tag_uuid
+             ORDER BY c.sample_count DESC
              LIMIT 200",
-            where_sql
-        );
-        query_rows(conn, &sql, &where_params, |r| {
-            let uuid: String = r.get(0)?;
-            let label: String = r.get(1)?;
-            let count: i64 = r.get(2)?;
-            Ok(TagSummaryEntry {
-                count,
-                tag: serde_json::json!({
-                    "uuid": uuid,
-                    "label": label,
-                    "taxonomy": {
-                        "uuid": "",
-                        "name": "Library",
-                        "__typename": "Taxonomy"
-                    },
-                    "__typename": "Tag"
-                }),
-                typename: "TagSummaryEntry".into(),
-            })
-        })
+            &[],
+            |r| {
+                let uuid: String = r.get(0)?;
+                let label: String = r.get(1)?;
+                let count: i64 = r.get(2)?;
+                Ok(TagSummaryEntry {
+                    count,
+                    tag: serde_json::json!({
+                        "uuid": uuid,
+                        "label": label,
+                        "taxonomy": {
+                            "uuid": "",
+                            "name": "Library",
+                            "__typename": "Taxonomy"
+                        },
+                        "__typename": "Tag"
+                    }),
+                    typename: "TagSummaryEntry".into(),
+                })
+            },
+        )
     }
 
     fn param_refs(params: &[Value]) -> Vec<&dyn rusqlite::ToSql> {
@@ -1081,8 +1117,7 @@ mod search {
         }
         for tag in &params.tags {
             clauses.push(
-                "EXISTS (SELECT 1 FROM sample_tags st WHERE st.sample_uuid = s.uuid AND st.tag_uuid = ?)"
-                    .to_string(),
+                "s.uuid IN (SELECT sample_uuid FROM sample_tags WHERE tag_uuid = ?)".to_string(),
             );
             sql_params.push(tag.clone().into());
         }
@@ -1826,7 +1861,7 @@ mod tests {
                 relative_audio_path: "My_Pack/kick.mp3".into(),
                 waveform_relative_path: None,
                 audio_cached_at: 1,
-                favorite: Some(false),
+                favorite: Some(true),
             },
         )
         .unwrap();
@@ -1876,6 +1911,31 @@ mod tests {
         )
         .unwrap();
         assert_eq!(by_key.total_records, 1);
+
+        let combined = search::search(
+            &conn,
+            LibrarySearchParams {
+                query: Some("kick".into()),
+                tags: vec!["t1".into()],
+                page: 1,
+                limit: 50,
+                sort: "bpm".into(),
+                order: "ASC".into(),
+                favorites_only: true,
+                asset_category_slug: Some("oneshot".into()),
+                key: Some("c".into()),
+                chord_type: Some("MAJOR".into()),
+                min_bpm: Some(110),
+                max_bpm: Some(130),
+                bpm: Some("120".into()),
+                pack_uuid: Some("pack-1".into()),
+                samples_dir: dir.path().to_str().unwrap().into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(combined.total_records, 1);
+        assert_eq!(combined.items[0]["uuid"], "sample-1");
+        assert_eq!(combined.tag_summary[0].count, 1);
     }
 
     #[test]
