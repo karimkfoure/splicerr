@@ -2049,6 +2049,45 @@ mod tests {
     }
 
     #[test]
+    fn migration_populates_existing_pack_counts() {
+        let (_dir, conn) = test_conn();
+        ingest::upsert(
+            &conn,
+            UpsertPayload {
+                asset: sample_asset("sample-1", "pack-1", "Existing Pack"),
+                relative_audio_path: "Existing_Pack/kick.mp3".into(),
+                waveform_relative_path: None,
+                audio_cached_at: 1,
+                favorite: None,
+            },
+        )
+        .unwrap();
+        conn.execute_batch(
+            "DROP TRIGGER library_pack_counts_sample_insert;
+             DROP TRIGGER library_pack_counts_sample_delete;
+             DROP TRIGGER library_pack_counts_sample_update;
+             DROP TABLE library_pack_counts;
+             DROP INDEX idx_library_name;
+             DROP INDEX idx_library_pack_name;
+             DROP INDEX idx_library_duration;
+             DROP INDEX idx_library_popularity;
+             DROP INDEX idx_library_cached_pack;
+             DELETE FROM schema_migrations WHERE version = 9;",
+        )
+        .unwrap();
+
+        migrate(&conn).unwrap();
+        let count: i64 = conn
+            .query_row(
+                "SELECT sample_count FROM library_pack_counts WHERE pack_uuid = 'pack-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
     fn mirror_job_resumes_and_preserves_cached_progress() {
         let (_dir, conn) = test_conn();
 

@@ -293,6 +293,13 @@ pub fn migrate(conn: &Connection) -> Result<(), String> {
                 sample_count INTEGER NOT NULL
             );
 
+            CREATE INDEX IF NOT EXISTS idx_library_cached_pack
+                ON samples(pack_uuid) WHERE audio_cached_at > 0;
+
+            INSERT INTO library_pack_counts (pack_uuid, sample_count)
+            SELECT pack_uuid, COUNT(*) FROM samples
+            WHERE audio_cached_at > 0 GROUP BY pack_uuid;
+
             CREATE TRIGGER IF NOT EXISTS library_pack_counts_sample_insert
             AFTER INSERT ON samples
             WHEN NEW.audio_cached_at > 0
@@ -334,9 +341,7 @@ pub fn migrate(conn: &Connection) -> Result<(), String> {
                 ON samples(duration_ms) WHERE audio_cached_at > 0;
             CREATE INDEX IF NOT EXISTS idx_library_popularity
                 ON samples(pack_popularity_score DESC, ingested_at DESC)
-                WHERE audio_cached_at > 0;
-            CREATE INDEX IF NOT EXISTS idx_library_cached_pack
-                ON samples(pack_uuid) WHERE audio_cached_at > 0;",
+                WHERE audio_cached_at > 0;",
         )
         .map_err(|e| e.to_string())?;
         conn.execute("INSERT INTO schema_migrations (version) VALUES (9)", [])
