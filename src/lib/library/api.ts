@@ -64,10 +64,13 @@ export type ExportSampleWavResult = {
     outputFrames: number
     startTrimSamples: number
     endTrimSamples: number
+    endPaddingSamples: number
     targetBeats: number | null
     gridConfident: boolean
     policyVersion: number
     correctionEnabled: boolean
+    declaredPaddingSamples: number | null
+    calculatedPaddingSamples: number
 }
 
 export async function exportSampleWav(params: {
@@ -92,7 +95,7 @@ export async function exportSampleWav(params: {
 
 export type FavoriteExportSummary = {
     exported: number
-    alreadyExported: number
+    regenerated: number
     failed: number
     failures: string[]
 }

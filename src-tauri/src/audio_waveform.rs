@@ -71,9 +71,9 @@ fn local_waveform_sync(params: LocalWaveformParams) -> Result<LocalWaveformResul
     let relative = safe_relative_path(&params.relative_audio_path)?;
     let source = PathBuf::from(params.samples_dir).join(relative);
     let started = Instant::now();
-    let (sample_rate, channels, samples) = decode_mp3(&source)?;
+    let audio = decode_mp3(&source)?;
     let decoded = Instant::now();
-    let bins = spectral_bins(sample_rate, channels, &samples);
+    let bins = spectral_bins(audio.sample_rate, audio.channels, &audio.interleaved);
     let analyzed = Instant::now();
     Ok(LocalWaveformResult {
         bins,

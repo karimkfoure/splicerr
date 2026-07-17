@@ -161,6 +161,7 @@ function countBy(rows, key) {
 const decoded = results.filter((row) => !row.error)
 const strongChange = decoded.filter((row) => row.changeJumpDb >= 20)
 const strongNear1105 = strongChange.filter((row) => Math.abs(row.changeSample - 1_105) <= 128)
+const gridded = decoded.filter((row) => row.gridConfident)
 console.log(JSON.stringify({
     category, requested, decoded: decoded.length, errors: countBy(results.filter((row) => row.error), "error"),
     gridConfident: decoded.filter((row) => row.gridConfident).length,
@@ -173,6 +174,9 @@ console.log(JSON.stringify({
     changeSampleStrong: distribution(strongChange, "changeSample"),
     changeJumpDb: distribution(decoded, "changeJumpDb"),
     insufficientFor1105: decoded.filter((row) => row.excessFrames < 1_105).length,
+    griddedExcessFrames: distribution(gridded, "excessFrames"),
+    griddedInsufficientFor1105: gridded.filter((row) => row.excessFrames < 1_105).length,
+    griddedNegativeExcess: gridded.filter((row) => row.excessFrames < 0).length,
     excessiveOver2304: decoded.filter((row) => row.excessFrames > 2_304).length,
     seamWinners: countBy(decoded, "seamWinner"),
     bySampleRate: Object.fromEntries([...new Set(decoded.map((row) => row.sampleRate))].map((rate) => {

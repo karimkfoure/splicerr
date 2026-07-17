@@ -16,6 +16,7 @@
     "backfill:bitrates": "node scripts/backfill-library-bitrates.mjs",
     "validate:filters": "node scripts/validate-library-filters.mjs",
     "audit:library": "node scripts/audit-library.mjs",
+    "audit:exports": "node scripts/audit-exported-wavs.mjs",
     "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
     "tauri": "tauri"
   },

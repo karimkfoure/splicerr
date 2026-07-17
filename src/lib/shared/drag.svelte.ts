@@ -111,6 +111,7 @@ export async function handleSampleDownload(sampleAsset: SampleAsset) {
         console.log("💾 Exported WAV at", result.absolutePath)
     } catch (e) {
         console.error("⚠️ Error downloading", e)
+        throw e
     } finally {
         loading.setCursor(false)
     }
@@ -130,11 +131,14 @@ export async function handleSampleDrag(event: DragEvent, sampleAsset: SampleAsse
             uuid: sampleAsset.uuid,
             name: sampleAsset.name,
             correctionEnabled: exportResult.correctionEnabled,
+            declaredPaddingSamples: exportResult.declaredPaddingSamples,
+            calculatedPaddingSamples: exportResult.calculatedPaddingSamples,
             sampleRate: exportResult.sampleRate,
             sourceFrames: exportResult.sourceFrames,
             outputFrames: exportResult.outputFrames,
             startTrimSamples: exportResult.startTrimSamples,
             endTrimSamples: exportResult.endTrimSamples,
+            endPaddingSamples: exportResult.endPaddingSamples,
             targetBeats: exportResult.targetBeats,
             gridConfident: exportResult.gridConfident,
             path,

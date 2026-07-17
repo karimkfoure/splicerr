@@ -285,7 +285,6 @@
                         downloading = true
                         try {
                             await handleSampleDownload(sampleAsset)
-                            setCachedInLibrary(sampleAsset.uuid, true)
                         } finally {
                             downloading = false
                         }

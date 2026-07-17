@@ -24,7 +24,6 @@ for (const bpm of bpms) {
     const targetFrames = Math.round(16 * 60 * sampleRate / bpm)
     const variants = [
         ["raw", 0, null],
-        ["12ms", Math.round(sampleRate * 0.012), targetFrames],
         ["1105", 1_105, targetFrames],
     ]
     for (const [label, start, length] of variants) {
