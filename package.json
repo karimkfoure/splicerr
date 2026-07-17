@@ -17,6 +17,7 @@
     "validate:filters": "node scripts/validate-library-filters.mjs",
     "audit:library": "node scripts/audit-library.mjs",
     "audit:exports": "node scripts/audit-exported-wavs.mjs",
+    "test:waveform-scheduler": "node --experimental-strip-types scripts/test-waveform-scheduler.mjs",
     "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
     "tauri": "tauri"
   },

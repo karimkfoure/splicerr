@@ -24,18 +24,23 @@
     $effect(() => {
         if (!enabled || !relativeAudioPath || loadedPath === relativeAudioPath) return
         const requested = relativeAudioPath
+        const controller = new AbortController()
         const timer = window.setTimeout(() => {
-            loadLocalWaveform(requested)
+            loadLocalWaveform(requested, controller.signal)
                 .then((result) => {
                     if (requested !== relativeAudioPath) return
                     bins = result.bins
                     loadedPath = requested
                 })
-                .catch((error) =>
+                .catch((error) => {
+                    if (error instanceof DOMException && error.name === "AbortError") return
                     console.debug("Local waveform unavailable", error)
-                )
+                })
         }, 80)
-        return () => window.clearTimeout(timer)
+        return () => {
+            window.clearTimeout(timer)
+            controller.abort()
+        }
     })
 
     $effect(() => {
