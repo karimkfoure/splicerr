@@ -1,7 +1,7 @@
 mod popularity;
 mod schema;
 
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{config::DbConfig, params, Connection, OptionalExtension};
 use schema::migrate;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -75,25 +75,51 @@ fn normalize_chord_type(chord_type: Option<&str>) -> Option<String> {
 }
 
 #[tauri::command]
-pub fn library_open(state: State<LibraryState>, samples_dir: String) -> Result<(), String> {
-    let path = db_path(&samples_dir);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
-    let conn = Connection::open(&path).map_err(|e| e.to_string())?;
-    conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;")
+pub async fn library_open(
+    state: State<'_, LibraryState>,
+    samples_dir: String,
+) -> Result<(), String> {
+    let state_conn = Arc::clone(&state.conn);
+    tauri::async_runtime::spawn_blocking(move || {
+        let path = db_path(&samples_dir);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        let conn = Connection::open(&path).map_err(|e| e.to_string())?;
+        conn.set_db_config(DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, true)
+            .map_err(|e| e.to_string())?;
+        conn.execute_batch(
+            "PRAGMA journal_mode=WAL;
+             PRAGMA synchronous=NORMAL;
+             PRAGMA wal_autocheckpoint=0;",
+        )
         .map_err(|e| e.to_string())?;
-    migrate(&conn)?;
-    let mut guard = state.conn.lock().map_err(|e| e.to_string())?;
-    *guard = Some(conn);
-    Ok(())
+        migrate(&conn)?;
+
+        let old = {
+            let mut guard = state_conn.lock().map_err(|e| e.to_string())?;
+            guard.replace(conn)
+        };
+        drop(old);
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-pub fn library_close(state: State<LibraryState>) -> Result<(), String> {
-    let mut guard = state.conn.lock().map_err(|e| e.to_string())?;
-    *guard = None;
-    Ok(())
+pub async fn library_close(state: State<'_, LibraryState>) -> Result<(), String> {
+    let state_conn = Arc::clone(&state.conn);
+    tauri::async_runtime::spawn_blocking(move || {
+        let old = {
+            let mut guard = state_conn.lock().map_err(|e| e.to_string())?;
+            guard.take()
+        };
+        drop(old);
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[derive(Debug, Deserialize)]
