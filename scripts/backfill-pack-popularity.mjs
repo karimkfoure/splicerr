@@ -5,8 +5,8 @@ import path from "node:path"
 import { chromium } from "playwright"
 
 const GRAPHQL_URL = "https://surfaces-graphql.splice.com/graphql"
-const PAGE_SIZE = 100
-const PACKS_QUERY = `query PacksSearch($page: Int, $limit: Int = 100) {
+const PAGE_SIZE = 150
+const PACKS_QUERY = `query PacksSearch($page: Int, $limit: Int = 150) {
   assetsSearch(
     filter: {legacy: true, published: true, asset_type_slug: pack}
     pagination: {page: $page, limit: $limit}
