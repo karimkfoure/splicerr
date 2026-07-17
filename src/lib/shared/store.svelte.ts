@@ -48,7 +48,7 @@ export const PER_PAGE = 50
 /** Splice page size while walking full result sets in bulk download. */
 export const BULK_DOWNLOAD_SPLICE_PAGE_SIZE = 100
 /** Local SQLite search — one round-trip can safely return more than Splice API pages. */
-export const LIBRARY_PER_PAGE = 150
+export const LIBRARY_PER_PAGE = 100
 
 export const LIBRARY_SORTS = [
     "name",
@@ -87,6 +87,7 @@ type BrowseListCache = {
     has_more: boolean
     tag_summary: TagSummaryEntry[]
     page: number
+    nextCursor: string | null
 }
 
 const browseListCaches: Record<BrowseMode, BrowseListCache | null> = {
@@ -119,6 +120,7 @@ function snapshotBrowseListCache(mode: BrowseMode) {
         has_more: dataStore.has_more,
         tag_summary: dataStore.tag_summary,
         page: queryStore.page,
+        nextCursor: mode === "library" ? libraryNextCursor : null,
     }
 }
 
@@ -147,6 +149,7 @@ export function switchBrowseMode(mode: BrowseMode) {
         dataStore.tag_summary = cache.tag_summary
         currentQueryIdentity = identity
         queryStore.page = cache.page
+        if (mode === "library") libraryNextCursor = cache.nextCursor
         loading.assets = false
         loading.fetchError = null
         loading.beforeFirstLoad = false
@@ -217,6 +220,8 @@ export const storeCallbacks = $state({
 let currentQueryIdentity: string = ""
 let alignListAfterBrowseModeSwitch = false
 let libraryRequestId = 0
+let libraryNextCursor: string | null = null
+let libraryAppendInFlight = false
 
 function applyBrowseModeListReset() {
     if (!alignListAfterBrowseModeSwitch) return
@@ -228,6 +233,8 @@ export function resetAssetList() {
     libraryRequestId += 1
     currentQueryIdentity = ""
     queryStore.page = 1
+    libraryNextCursor = null
+    libraryAppendInFlight = false
     dataStore.sampleAssets = []
     loading.fetchError = null
 }
@@ -329,7 +336,8 @@ function fetchLibraryAssets() {
 
     const identityBeforeFetch = libraryQueryIdentity()
     const isAppend =
-        identityBeforeFetch === currentQueryIdentity && queryStore.page > 1
+        identityBeforeFetch === currentQueryIdentity && libraryNextCursor !== null
+    if (isAppend && libraryAppendInFlight) return
     if (!isAppend) {
         storeCallbacks.onbeforedataupdate?.()
         queryStore.page = 1
@@ -338,11 +346,12 @@ function fetchLibraryAssets() {
     loading.assets = true
     loading.fetchError = null
     const requestId = ++libraryRequestId
+    if (isAppend) libraryAppendInFlight = true
 
     librarySearch({
         query: queryStore.query,
         tags: [...dataStore.tags],
-        page: queryStore.page,
+        cursor: isAppend ? libraryNextCursor : null,
         limit: LIBRARY_PER_PAGE,
         sort: librarySortField(),
         order: queryStore.order,
@@ -358,6 +367,7 @@ function fetchLibraryAssets() {
     })
         .then((result) => {
             if (requestId !== libraryRequestId) return
+            libraryAppendInFlight = false
             loading.assets = false
             loading.beforeFirstLoad = false
             if (browseStore.mode !== "library") {
@@ -381,6 +391,7 @@ function fetchLibraryAssets() {
             dataStore.total_records = result.totalRecords
             dataStore.total_exact = result.totalExact
             dataStore.has_more = result.hasMore
+            libraryNextCursor = result.nextCursor
             storeCallbacks.onbeforetagsupdate?.()
             dataStore.tag_summary = result.tagSummary
             loading.fetchError = null
@@ -388,6 +399,7 @@ function fetchLibraryAssets() {
         })
         .catch((error: Error) => {
             if (requestId !== libraryRequestId) return
+            libraryAppendInFlight = false
             console.error("⚠️ Failed to fetch library assets", error)
             loading.fetchError = error
             loading.assets = false

@@ -83,7 +83,7 @@ export async function librarySetFavorite(
 export type LibrarySearchParams = {
     query?: string
     tags: string[]
-    page: number
+    cursor?: string | null
     limit: number
     sort: string
     order: string
@@ -298,6 +298,7 @@ export type LibrarySearchResponse = {
     totalRecords: number
     totalExact: boolean
     hasMore: boolean
+    nextCursor: string | null
     tagSummary: TagSummaryEntry[]
 }
 
@@ -307,12 +308,13 @@ export async function librarySearch(params: LibrarySearchParams) {
         totalRecords: number
         totalExact: boolean
         hasMore: boolean
+        nextCursor: string | null
         tagSummary: TagSummaryEntry[]
     }>("library_search", {
         params: {
             query: params.query ?? null,
             tags: params.tags,
-            page: params.page,
+            cursor: params.cursor ?? null,
             limit: params.limit,
             sort: params.sort,
             order: params.order,
@@ -332,6 +334,7 @@ export async function librarySearch(params: LibrarySearchParams) {
         totalRecords: res.totalRecords,
         totalExact: res.totalExact,
         hasMore: res.hasMore,
+        nextCursor: res.nextCursor,
         tagSummary: res.tagSummary,
     } satisfies LibrarySearchResponse
 }
@@ -341,7 +344,7 @@ export async function libraryTagSummary(params: LibrarySearchParams) {
         params: {
             query: params.query ?? null,
             tags: params.tags,
-            page: params.page,
+            cursor: params.cursor ?? null,
             limit: params.limit,
             sort: params.sort,
             order: params.order,

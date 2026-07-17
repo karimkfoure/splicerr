@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { execFileSync } from "node:child_process"
-import { existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs"
+import { closeSync, existsSync, mkdirSync, openSync, readSync, renameSync, rmSync, writeFileSync } from "node:fs"
 import path from "node:path"
 
 const args = parseArgs(process.argv.slice(2))
@@ -23,7 +23,7 @@ while (processed < maxItems) {
     const rows = sqliteJson(`
         SELECT uuid, cover_source_url, cover_relative_path
         FROM packs
-        WHERE cover_cached_at = 0 AND cover_source_url IS NOT NULL
+        WHERE cover_source_url IS NOT NULL
           AND cover_relative_path IS NOT NULL AND uuid > ${sql(cursor)}
         ORDER BY uuid LIMIT ${limit};`)
     if (rows.length === 0) break
@@ -33,7 +33,7 @@ while (processed < maxItems) {
     const successes = []
     await mapConcurrent(rows, concurrency, async (row) => {
         const destination = path.join(samplesDir, row.cover_relative_path)
-        if (existsSync(destination)) {
+        if (isValidImage(destination)) {
             reused++
             successes.push(row.uuid)
             return
@@ -63,6 +63,25 @@ while (processed < maxItems) {
 }
 
 console.log(`covers complete processed=${processed} saved=${saved} reused=${reused} failed=${failed}`)
+
+function isValidImage(filePath) {
+    if (!existsSync(filePath)) return false
+    let fd
+    try {
+        fd = openSync(filePath, "r")
+        const bytes = Buffer.allocUnsafe(12)
+        const length = readSync(fd, bytes, 0, bytes.length, 0)
+        if (length < 12) return false
+        const jpeg = bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff
+        const png = bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
+        const webp = bytes.subarray(0, 4).toString() === "RIFF" && bytes.subarray(8, 12).toString() === "WEBP"
+        return jpeg || png || webp
+    } catch {
+        return false
+    } finally {
+        if (fd != null) closeSync(fd)
+    }
+}
 
 async function mapConcurrent(items, workers, work) {
     let index = 0

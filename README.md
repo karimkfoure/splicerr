@@ -75,6 +75,12 @@ pnpm backfill:bitrates -- --samples-dir /Volumes/disco/splicerr --recalculate
 
 Both commands are safe to restart. Bitrate recalculation reads the MPEG frame header and checkpoints each committed UUID batch, so it also handles samples whose remote duration is missing. Add `--check` when an explicit full SQLite integrity check is desired before maintenance.
 
+Audit that every cached row points to a valid MP3. `--repair` removes invalid files and marks their rows uncached so the next headless mirror pass downloads them again; add `--orphans` for the slower reverse disk scan.
+
+```bash
+pnpm audit:library -- --samples-dir /Volumes/disco/splicerr --repair
+```
+
 Compare remote GraphQL filter totals with the local mirror (a diagnostic signal, not strict equality for a changing catalog):
 
 ```bash

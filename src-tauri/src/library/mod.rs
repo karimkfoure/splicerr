@@ -46,7 +46,13 @@ fn open_read_conn(samples_dir: &str) -> Result<Connection, String> {
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )
     .map_err(|e| e.to_string())?;
-    conn.execute_batch("PRAGMA query_only=ON; PRAGMA busy_timeout=3000;")
+    conn.execute_batch(
+        "PRAGMA query_only=ON;
+         PRAGMA busy_timeout=3000;
+         PRAGMA mmap_size=536870912;
+         PRAGMA cache_size=-32768;
+         PRAGMA temp_store=MEMORY;",
+    )
         .map_err(|e| e.to_string())?;
     Ok(conn)
 }
@@ -709,7 +715,8 @@ pub fn library_set_favorite(
 pub struct LibrarySearchParams {
     pub query: Option<String>,
     pub tags: Vec<String>,
-    pub page: i32,
+    #[serde(default)]
+    pub cursor: Option<String>,
     pub limit: i32,
     pub sort: String,
     pub order: String,
@@ -746,6 +753,7 @@ pub struct LibrarySearchResponse {
     pub total_records: i64,
     pub total_exact: bool,
     pub has_more: bool,
+    pub next_cursor: Option<String>,
     pub tag_summary: Vec<TagSummaryEntry>,
 }
 
@@ -771,7 +779,7 @@ pub async fn library_search(
             1_000,
             Some(move || {
                 generation.load(Ordering::Relaxed) != request_generation
-                    || started.elapsed() > std::time::Duration::from_secs(10)
+                    || started.elapsed() > std::time::Duration::from_secs(30)
             }),
         );
         search::search(&conn, params)
@@ -1003,7 +1011,6 @@ mod search {
             .query
             .as_deref()
             .is_some_and(|query| !query.trim().is_empty());
-        let (where_sql, mut where_params) = build_filter(&params, !has_query)?;
         let tag_driver = if !has_query && params.pack_uuid.is_none() {
             params
                 .tags
@@ -1022,6 +1029,8 @@ mod search {
         } else {
             None
         };
+        let (where_sql, mut where_params) =
+            build_filter(&params, !has_query, tag_driver.as_deref())?;
         let unfiltered = is_unfiltered(&params);
         let exact_total: Option<i64> = if unfiltered {
             Some(query_scalar(
@@ -1038,9 +1047,20 @@ mod search {
         } else {
             "DESC"
         };
-        let offset = (params.page.max(1) - 1) * params.limit.max(1);
         let fetch_limit = params.limit.max(1) + 1;
-        let sql = if has_query {
+        let cursor: Option<serde_json::Value> = params
+            .cursor
+            .as_deref()
+            .map(serde_json::from_str)
+            .transpose()
+            .map_err(|e| format!("invalid library cursor: {e}"))?;
+        let cursor_value = cursor.as_ref().and_then(|c| c.get("value"));
+        let cursor_uuid = cursor
+            .as_ref()
+            .and_then(|c| c.get("uuid"))
+            .and_then(|v| v.as_str());
+
+        let (source_sql, source_filter, cursor_expr, sort_expr) = if has_query {
             let fts_query = params
                 .query
                 .as_deref()
@@ -1051,91 +1071,89 @@ mod search {
                 .collect::<Vec<_>>()
                 .join(" ");
             where_params.insert(0, fts_query.into());
-            format!(
-                "SELECT s.uuid FROM samples_fts f JOIN samples s ON s.uuid = f.sample_uuid
-                 WHERE f.samples_fts MATCH ? AND {} ORDER BY f.rowid DESC LIMIT {} OFFSET {}",
-                where_sql, fetch_limit, offset
+            (
+                "samples_fts f JOIN samples s ON s.uuid = f.sample_uuid".to_string(),
+                "f.samples_fts MATCH ? AND".to_string(),
+                "f.rowid".to_string(),
+                "f.rowid".to_string(),
             )
         } else if let Some(tag_driver) = tag_driver {
             where_params.insert(0, tag_driver.into());
-            let sort_sql = match params.sort.as_str() {
-                // Backfill inserts recent rows sparsely across tags. Walking the
-                // dense end avoids scanning millions of rows before page one.
-                "ingested_at" => "driver.rowid ASC".to_string(),
-                "pack_popularity" => format!(
-                    "s.pack_popularity_score IS NULL, s.pack_popularity_score {}, s.ingested_at DESC",
-                    if order == "ASC" { "ASC" } else { "DESC" }
-                ),
-                "bpm" => format!("s.bpm {order}"),
-                "duration" => format!("s.duration_ms {order}"),
-                "key" => format!("s.key {order}"),
-                "pack_name" => format!("s.pack_name {order}"),
-                "name" => format!("s.name {order}"),
-                _ => format!("s.ingested_at {order}"),
+            // The dense tag rowid is a stable, indexed browse order for the
+            // default local sort. Explicit column sorts keep their semantics.
+            let expr = match params.sort.as_str() {
+                "pack_popularity" => if order == "ASC" {
+                    "COALESCE(s.pack_popularity_score, 9223372036854775807)"
+                } else {
+                    "COALESCE(s.pack_popularity_score, -1)"
+                },
+                "bpm" => "COALESCE(s.bpm, -1)",
+                "duration" => "s.duration_ms",
+                "key" => "COALESCE(s.key, '') COLLATE NOCASE",
+                "pack_name" => "s.pack_name COLLATE NOCASE",
+                "name" => "s.name COLLATE NOCASE",
+                _ => "driver.rowid",
             };
-            format!(
-                "SELECT s.uuid FROM sample_tags driver INDEXED BY idx_sample_tags_tag
-                 JOIN samples s ON s.uuid = driver.sample_uuid
-                 WHERE driver.tag_uuid = ? AND {} ORDER BY {} LIMIT {} OFFSET {}",
-                where_sql, sort_sql, fetch_limit, offset
-            )
-        } else if params.sort == "pack_popularity" && unfiltered {
-            let index = if params.pack_uuid.is_some() {
-                "idx_library_cached_pack"
-            } else {
-                "idx_library_popularity"
-            };
-            format!(
-                "SELECT s.uuid FROM samples s INDEXED BY {} WHERE {} ORDER BY s.pack_popularity_score IS NULL, s.pack_popularity_score {} , s.ingested_at DESC LIMIT {} OFFSET {}",
-                index,
-                where_sql,
-                if order == "ASC" { "ASC" } else { "DESC" },
-                fetch_limit,
-                offset
-            )
-        } else if unfiltered {
-            let (sort_col, mut sort_index) = match params.sort.as_str() {
-                "bpm" => ("s.bpm", "idx_samples_bpm"),
-                "duration" => ("s.duration_ms", "idx_library_duration"),
-                "key" => ("s.key", "idx_samples_key"),
-                "ingested_at" => ("s.ingested_at", "idx_samples_ingested"),
-                "pack_name" => ("s.pack_name", "idx_library_pack_name"),
-                _ => ("s.name", "idx_library_name"),
-            };
-            if params.pack_uuid.is_some() {
-                sort_index = "idx_library_cached_pack";
-            }
-            format!(
-                "SELECT s.uuid FROM samples s INDEXED BY {} WHERE {} ORDER BY {} {} LIMIT {} OFFSET {}",
-                sort_index, where_sql, sort_col, order, fetch_limit, offset
+            (
+                "sample_tags driver INDEXED BY idx_sample_tags_tag JOIN samples s ON s.uuid = driver.sample_uuid".to_string(),
+                "driver.tag_uuid = ? AND".to_string(),
+                expr.to_string(),
+                expr.to_string(),
             )
         } else {
-            let sort_sql = match params.sort.as_str() {
-                "pack_popularity" => format!(
-                    "s.pack_popularity_score IS NULL, s.pack_popularity_score {}, s.ingested_at DESC",
-                    if order == "ASC" { "ASC" } else { "DESC" }
-                ),
-                "bpm" => format!("s.bpm {order}"),
-                "duration" => format!("s.duration_ms {order}"),
-                "key" => format!("s.key {order}"),
-                "pack_name" => format!("s.pack_name {order}"),
-                "name" => format!("s.name {order}"),
-                _ => format!("s.ingested_at {order}"),
+            let expr = match params.sort.as_str() {
+                "pack_popularity" => if order == "ASC" {
+                    "COALESCE(s.pack_popularity_score, 9223372036854775807)"
+                } else {
+                    "COALESCE(s.pack_popularity_score, -1)"
+                },
+                "bpm" => "COALESCE(s.bpm, -1)",
+                "duration" => "s.duration_ms",
+                "key" => "COALESCE(s.key, '') COLLATE NOCASE",
+                "pack_name" => "s.pack_name COLLATE NOCASE",
+                "name" => "s.name COLLATE NOCASE",
+                _ => "s.ingested_at",
             };
-            format!(
-                "SELECT s.uuid FROM samples s WHERE {} ORDER BY {} LIMIT {} OFFSET {}",
-                where_sql, sort_sql, fetch_limit, offset
+            (
+                "samples s".to_string(),
+                String::new(),
+                expr.to_string(),
+                expr.to_string(),
             )
         };
 
-        let mut uuids: Vec<String> = query_rows(conn, &sql, &where_params, |r| r.get(0))?;
-        let has_more = uuids.len() > params.limit.max(1) as usize;
-        if has_more {
-            uuids.pop();
+        let mut seek_sql = String::new();
+        if let (Some(value), Some(uuid)) = (cursor_value, cursor_uuid) {
+            let op = if order == "ASC" { ">" } else { "<" };
+            seek_sql = format!(
+                " AND (({cursor_expr}) {op} ? OR (({cursor_expr}) = ? AND s.uuid {op} ?))"
+            );
+            let value = json_to_sql_value(value)?;
+            where_params.push(value.clone());
+            where_params.push(value);
+            where_params.push(uuid.to_string().into());
         }
 
+        let sql = format!(
+            "SELECT s.uuid, {cursor_expr} FROM {source_sql}
+             WHERE {source_filter} {where_sql}{seek_sql}
+             ORDER BY {sort_expr} {order}, s.uuid {order} LIMIT {fetch_limit}"
+        );
+
+        let mut candidates: Vec<(String, Value)> = query_rows(conn, &sql, &where_params, |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })?;
+        let has_more = candidates.len() > params.limit.max(1) as usize;
+        if has_more {
+            candidates.pop();
+        }
+        let next_cursor = candidates.last().map(|(uuid, value)| {
+            serde_json::json!({ "value": sql_value_to_json(value), "uuid": uuid }).to_string()
+        });
+        let uuids = candidates.into_iter().map(|(uuid, _)| uuid).collect::<Vec<_>>();
+
         let items = hydrate_assets(conn, &uuids, &params.samples_dir)?;
-        let loaded_through = i64::from(offset) + items.len() as i64;
+        let loaded_through = items.len() as i64;
         let (total, total_exact) = match exact_total {
             Some(total) => (total, true),
             None if !has_more => (loaded_through, true),
@@ -1149,8 +1167,29 @@ mod search {
             total_records: total,
             total_exact,
             has_more,
+            next_cursor,
             tag_summary,
         })
+    }
+
+    fn json_to_sql_value(value: &serde_json::Value) -> Result<Value, String> {
+        match value {
+            serde_json::Value::String(value) => Ok(value.clone().into()),
+            serde_json::Value::Number(value) => value
+                .as_i64()
+                .map(Value::Integer)
+                .ok_or_else(|| "unsupported numeric cursor".to_string()),
+            _ => Err("unsupported library cursor value".to_string()),
+        }
+    }
+
+    fn sql_value_to_json(value: &Value) -> serde_json::Value {
+        match value {
+            Value::Integer(value) => serde_json::json!(value),
+            Value::Real(value) => serde_json::json!(value),
+            Value::Text(value) => serde_json::json!(value),
+            _ => serde_json::Value::Null,
+        }
     }
 
     pub fn tag_summary(
@@ -1270,6 +1309,7 @@ mod search {
     fn build_filter(
         params: &LibrarySearchParams,
         include_query: bool,
+        driven_tag: Option<&str>,
     ) -> Result<(String, Vec<Value>), String> {
         let mut clauses = vec!["s.audio_cached_at > 0".to_string()];
         let mut sql_params: Vec<Value> = vec![];
@@ -1308,6 +1348,9 @@ mod search {
             }
         }
         for tag in &params.tags {
+            if driven_tag == Some(tag.as_str()) {
+                continue;
+            }
             clauses.push(
                 "EXISTS (SELECT 1 FROM sample_tags st WHERE st.sample_uuid = s.uuid AND st.tag_uuid = ?)"
                     .to_string(),
@@ -2084,7 +2127,7 @@ mod tests {
             LibrarySearchParams {
                 query: Some("kick".into()),
                 tags: vec![],
-                page: 1,
+                cursor: None,
                 limit: 50,
                 sort: "name".into(),
                 order: "DESC".into(),
@@ -2107,7 +2150,7 @@ mod tests {
             LibrarySearchParams {
                 query: None,
                 tags: vec![],
-                page: 1,
+                cursor: None,
                 limit: 50,
                 sort: "name".into(),
                 order: "DESC".into(),
@@ -2142,7 +2185,7 @@ mod tests {
             LibrarySearchParams {
                 query: None,
                 tags: vec![],
-                page: 1,
+                cursor: None,
                 limit: 1,
                 sort: "ingested_at".into(),
                 order: "DESC".into(),
@@ -2161,13 +2204,36 @@ mod tests {
         assert_eq!(paged.total_records, 1);
         assert!(!paged.total_exact);
         assert!(paged.has_more);
+        let next_page = search::search(
+            &conn,
+            LibrarySearchParams {
+                query: None,
+                tags: vec![],
+                cursor: paged.next_cursor.clone(),
+                limit: 1,
+                sort: "ingested_at".into(),
+                order: "DESC".into(),
+                favorites_only: false,
+                asset_category_slug: Some("oneshot".into()),
+                key: None,
+                chord_type: None,
+                min_bpm: None,
+                max_bpm: None,
+                bpm: None,
+                pack_uuid: None,
+                samples_dir: dir.path().to_str().unwrap().into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(next_page.items.len(), 1);
+        assert_ne!(paged.items[0]["uuid"], next_page.items[0]["uuid"]);
 
         let combined = search::search(
             &conn,
             LibrarySearchParams {
                 query: Some("kick".into()),
                 tags: vec!["t1".into()],
-                page: 1,
+                cursor: None,
                 limit: 50,
                 sort: "bpm".into(),
                 order: "ASC".into(),
@@ -2198,7 +2264,7 @@ mod tests {
             LibrarySearchParams {
                 query: Some("kick".into()),
                 tags: vec![],
-                page: 1,
+                cursor: None,
                 limit: 1,
                 sort: "ingested_at".into(),
                 order: "DESC".into(),

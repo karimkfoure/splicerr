@@ -76,10 +76,12 @@
     })
 
     storeCallbacks.onbeforedataupdate = () => {
+        viewportScrollTop = 0
         viewportRef.scrollTo({ top: 0, behavior: "smooth" })
     }
 
     storeCallbacks.onBrowseModeListReset = () => {
+        viewportScrollTop = 0
         if (viewportRef) viewportRef.scrollTop = 0
         const first = dataStore.sampleAssets[0]
         if (first) {
@@ -102,6 +104,25 @@
     let searchInputRef = $state<HTMLInputElement>(null!)
     let online = $state(
         typeof navigator !== "undefined" ? navigator.onLine : true
+    )
+    const LOCAL_ROW_HEIGHT = 57
+    const LOCAL_OVERSCAN = 12
+    let viewportScrollTop = $state(0)
+    let viewportHeight = $state(600)
+    const localVisibleStart = $derived(
+        Math.max(0, Math.floor(viewportScrollTop / LOCAL_ROW_HEIGHT) - LOCAL_OVERSCAN)
+    )
+    const localVisibleEnd = $derived(
+        Math.min(
+            dataStore.sampleAssets.length,
+            Math.ceil((viewportScrollTop + viewportHeight) / LOCAL_ROW_HEIGHT) +
+                LOCAL_OVERSCAN
+        )
+    )
+    const visibleSampleAssets = $derived(
+        browseStore.mode === "library"
+            ? dataStore.sampleAssets.slice(localVisibleStart, localVisibleEnd)
+            : dataStore.sampleAssets
     )
 
     const setBrowseMode = (mode: "splice" | "library") => {
@@ -174,7 +195,6 @@
             dataStore.has_more &&
             !loading.assets
         ) {
-            queryStore.page += 1
             fetchAssets()
         }
     }
@@ -190,6 +210,8 @@
         const onOnline = () => (online = true)
         const onOffline = () => (online = false)
         const onViewportScroll = () => {
+            viewportScrollTop = viewportRef.scrollTop
+            viewportHeight = viewportRef.clientHeight
             if (loading.assets) return
             const preloadDistance =
                 browseStore.mode === "library"
@@ -200,7 +222,7 @@
                 viewportRef.scrollHeight - preloadDistance
             if (!nearBottom || !dataStore.has_more) return
 
-            queryStore.page += 1
+            if (browseStore.mode === "splice") queryStore.page += 1
             fetchAssets()
         }
         window.addEventListener("online", onOnline)
@@ -208,6 +230,11 @@
         viewportRef.addEventListener("scroll", onViewportScroll, {
             passive: true,
         })
+        const viewportResize = new ResizeObserver(() => {
+            viewportHeight = viewportRef.clientHeight
+        })
+        viewportResize.observe(viewportRef)
+        viewportHeight = viewportRef.clientHeight
 
         searchInputRef.focus()
 
@@ -217,6 +244,7 @@
             window.removeEventListener("online", onOnline)
             window.removeEventListener("offline", onOffline)
             viewportRef.removeEventListener("scroll", onViewportScroll)
+            viewportResize.disconnect()
         }
     })
 </script>
@@ -544,7 +572,9 @@
                 />
             </div>
             <ProgressLoading
-                loading={loading.assets ||
+                loading={(loading.assets &&
+                    (browseStore.mode === "splice" ||
+                        dataStore.sampleAssets.length === 0)) ||
                     (browseStore.mode === "splice" &&
                         loading.waveformsCount > 0)}
             />
@@ -578,52 +608,65 @@
             }
         }}
     >
-        <div class="flex flex-col py-2 size-full">
-            {#each dataStore.sampleAssets as sampleAsset, index}
+        <div class="flex flex-col py-2 min-h-full">
+            {#if browseStore.mode === "library" && localVisibleStart > 0}
+                <div style={`height: ${localVisibleStart * LOCAL_ROW_HEIGHT}px`}></div>
+            {/if}
+            {#each visibleSampleAssets as sampleAsset, visibleIndex (sampleAsset.uuid)}
+                {@const index = browseStore.mode === "library"
+                    ? localVisibleStart + visibleIndex
+                    : visibleIndex}
                 {@const selected =
                     globalAudio.currentAsset?.uuid == sampleAsset.uuid}
-                <SampleListEntry
-                    {sampleAsset}
-                    {selected}
-                    playing={selected && !globalAudio.paused}
-                />
-                {#if index < dataStore.sampleAssets.length - 1}
-                    <div
-                        class={selected || index + 1 == selectedSampleIndex
-                            ? "px-2"
-                            : ""}
-                    >
-                        <Separator />
-                    </div>
-                {/if}
-            {:else}
-                <div
-                    class="flex flex-col gap-2 justify-center items-center size-full text-muted-foreground"
-                >
-                    {#if loading.fetchError}
-                        <Ghost size="48" />
-                        <p class="font-bold text-xl">Something went wrong :/</p>
-                        <p class="text-sm">Couldn't load any samples</p>
-                        <Button onclick={fetchAssets}>Retry</Button>
-                    {:else if browseStore.mode === "library" &&
-                        !isSamplesDirValid()}
-                        <Search size="48" />
-                        <p class="font-bold text-xl">Samples folder required</p>
-                        <p class="text-sm">
-                            Set a valid Samples Directory in Settings to use your
-                            library.
-                        </p>
-                    {:else if loading.beforeFirstLoad}
-                        <Smile size="48" />
-                        <p class="font-bold text-xl">Hey there!</p>
-                        <p class="text-sm">Make some cool music, will ya?</p>
-                    {:else}
-                        <Search size="48" />
-                        <p class="font-bold text-xl">No results</p>
-                        <p class="text-sm">Try different keywords</p>
+                <div style={browseStore.mode === "library" ? `height: ${LOCAL_ROW_HEIGHT}px` : undefined}>
+                    <SampleListEntry
+                        {sampleAsset}
+                        {selected}
+                        playing={selected && !globalAudio.paused}
+                    />
+                    {#if index < dataStore.sampleAssets.length - 1}
+                        <div
+                            class={selected || index + 1 == selectedSampleIndex
+                                ? "px-2"
+                                : ""}
+                        >
+                            <Separator />
+                        </div>
                     {/if}
                 </div>
+            {:else}
+                {#if dataStore.sampleAssets.length === 0}
+                    <div
+                        class="flex flex-col gap-2 justify-center items-center size-full text-muted-foreground"
+                    >
+                        {#if loading.fetchError}
+                            <Ghost size="48" />
+                            <p class="font-bold text-xl">Something went wrong :/</p>
+                            <p class="text-sm">Couldn't load any samples</p>
+                            <Button onclick={fetchAssets}>Retry</Button>
+                        {:else if browseStore.mode === "library" &&
+                            !isSamplesDirValid()}
+                            <Search size="48" />
+                            <p class="font-bold text-xl">Samples folder required</p>
+                            <p class="text-sm">
+                                Set a valid Samples Directory in Settings to use your
+                                library.
+                            </p>
+                        {:else if loading.beforeFirstLoad}
+                            <Smile size="48" />
+                            <p class="font-bold text-xl">Hey there!</p>
+                            <p class="text-sm">Make some cool music, will ya?</p>
+                        {:else}
+                            <Search size="48" />
+                            <p class="font-bold text-xl">No results</p>
+                            <p class="text-sm">Try different keywords</p>
+                        {/if}
+                    </div>
+                {/if}
             {/each}
+            {#if browseStore.mode === "library" && localVisibleEnd < dataStore.sampleAssets.length}
+                <div style={`height: ${(dataStore.sampleAssets.length - localVisibleEnd) * LOCAL_ROW_HEIGHT}px`}></div>
+            {/if}
             {#if loading.fetchError && dataStore.sampleAssets.length > 0}
                 <div
                     class="flex flex-col py-8 gap-2 justify-center items-center text-muted-foreground"

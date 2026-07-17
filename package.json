@@ -15,6 +15,7 @@
     "backfill:covers": "node scripts/backfill-library-covers.mjs",
     "backfill:bitrates": "node scripts/backfill-library-bitrates.mjs",
     "validate:filters": "node scripts/validate-library-filters.mjs",
+    "audit:library": "node scripts/audit-library.mjs",
     "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
     "tauri": "tauri"
   },
