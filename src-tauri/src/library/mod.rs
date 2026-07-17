@@ -53,7 +53,7 @@ fn open_read_conn(samples_dir: &str) -> Result<Connection, String> {
          PRAGMA cache_size=-32768;
          PRAGMA temp_store=MEMORY;",
     )
-        .map_err(|e| e.to_string())?;
+    .map_err(|e| e.to_string())?;
     Ok(conn)
 }
 
@@ -790,12 +790,33 @@ pub async fn library_search(
 
 #[tauri::command]
 pub async fn library_count(
-    _state: State<'_, LibraryState>,
+    state: State<'_, LibraryState>,
     params: LibrarySearchParams,
 ) -> Result<i64, String> {
+    let generation = Arc::clone(&state.search_generation);
+    let request_generation = generation.load(Ordering::SeqCst);
     tauri::async_runtime::spawn_blocking(move || {
         let conn = open_read_conn(&params.samples_dir)?;
-        search::count(&conn, &params)
+        let started = std::time::Instant::now();
+        conn.progress_handler(
+            1_000,
+            Some(move || {
+                generation.load(Ordering::Relaxed) != request_generation
+                    || started.elapsed() > std::time::Duration::from_secs(5)
+            }),
+        );
+        let result = search::count(&conn, &params);
+        eprintln!(
+            "library_count sort={} tags={} query={} elapsed_ms={} result={}",
+            params.sort,
+            params.tags.len(),
+            params.query.as_deref().unwrap_or_default(),
+            started.elapsed().as_millis(),
+            result
+                .as_ref()
+                .map_or_else(|_| "error".to_string(), |count| count.to_string())
+        );
+        result
     })
     .await
     .map_err(|e| e.to_string())?
@@ -1134,12 +1155,7 @@ mod search {
             } else {
                 "samples s".to_string()
             };
-            (
-                source,
-                String::new(),
-                expr.to_string(),
-                expr.to_string(),
-            )
+            (source, String::new(), expr.to_string(), expr.to_string())
         };
 
         let mut seek_sql = String::new();
@@ -1157,9 +1173,10 @@ mod search {
              ORDER BY {sort_expr} {order}, s.uuid {order} LIMIT {fetch_limit}"
         );
 
-        let mut candidates: Vec<(String, Value)> = query_rows(conn, &sql, &where_params, |r| {
-            Ok((r.get(0)?, r.get(1)?))
-        })?;
+        let candidates_started_at = std::time::Instant::now();
+        let mut candidates: Vec<(String, Value)> =
+            query_rows(conn, &sql, &where_params, |r| Ok((r.get(0)?, r.get(1)?)))?;
+        let candidates_ms = candidates_started_at.elapsed().as_millis();
         let has_more = candidates.len() > params.limit.max(1) as usize;
         if has_more {
             candidates.pop();
@@ -1167,9 +1184,14 @@ mod search {
         let next_cursor = candidates.last().map(|(uuid, value)| {
             serde_json::json!({ "value": sql_value_to_json(value), "uuid": uuid }).to_string()
         });
-        let uuids = candidates.into_iter().map(|(uuid, _)| uuid).collect::<Vec<_>>();
+        let uuids = candidates
+            .into_iter()
+            .map(|(uuid, _)| uuid)
+            .collect::<Vec<_>>();
 
+        let hydrate_started_at = std::time::Instant::now();
         let items = hydrate_assets(conn, &uuids, &params.samples_dir)?;
+        let hydrate_ms = hydrate_started_at.elapsed().as_millis();
         let loaded_through = items.len() as i64;
         let (total, total_exact) = match exact_total {
             Some(total) => (total, true),
@@ -1177,13 +1199,24 @@ mod search {
             None => (loaded_through, false),
         };
 
+        let sort = params.sort.clone();
+        let tag_count = params.tags.len();
+        let query = params.query.clone().unwrap_or_default();
+        let summary_started_at = std::time::Instant::now();
         let tag_summary = tag_summary(conn, params)?;
+        let summary_ms = summary_started_at.elapsed().as_millis();
 
         eprintln!(
-            "library_search cursor={} items={} has_more={} elapsed_ms={}",
+            "library_search sort={} tags={} query={} cursor={} items={} has_more={} candidates_ms={} hydrate_ms={} summary_ms={} elapsed_ms={}",
+            sort,
+            tag_count,
+            query,
             cursor.is_some(),
             items.len(),
             has_more,
+            candidates_ms,
+            hydrate_ms,
+            summary_ms,
             started_at.elapsed().as_millis()
         );
 
@@ -1204,6 +1237,32 @@ mod search {
                 "SELECT cached_sample_count FROM library_stats WHERE id = 1",
                 &[],
             );
+        }
+        if params.tags.len() == 1
+            && !params.favorites_only
+            && params
+                .query
+                .as_deref()
+                .unwrap_or_default()
+                .trim()
+                .is_empty()
+            && params.asset_category_slug.is_none()
+            && params.key.is_none()
+            && params.chord_type.is_none()
+            && params.min_bpm.is_none()
+            && params.max_bpm.is_none()
+            && params.bpm.is_none()
+            && params.pack_uuid.is_none()
+        {
+            return conn
+                .query_row(
+                    "SELECT sample_count FROM library_tag_counts WHERE tag_uuid = ?1",
+                    params![params.tags[0]],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map(|count| count.unwrap_or(0))
+                .map_err(|error| error.to_string());
         }
         let has_query = params
             .query
