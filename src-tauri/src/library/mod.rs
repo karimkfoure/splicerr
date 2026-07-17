@@ -1064,8 +1064,11 @@ mod search {
         } else {
             None
         };
-        let (where_sql, mut where_params) =
-            build_filter(&params, !has_query, tag_driver.as_deref())?;
+        let mut filter_params = params.clone();
+        if tag_driver.is_some() {
+            filter_params.tags.clear();
+        }
+        let (where_sql, mut where_params) = build_filter(&filter_params, !has_query, None)?;
         let unfiltered = is_unfiltered(&params);
         let exact_total: Option<i64> = if unfiltered {
             Some(query_scalar(
@@ -1113,7 +1116,8 @@ mod search {
                 "f.rowid".to_string(),
             )
         } else if let Some(tag_driver) = tag_driver {
-            where_params.insert(0, tag_driver.into());
+            let (source, source_filter, tag_values) = tag_driven_source(&params.tags, &tag_driver);
+            where_params.splice(0..0, tag_values);
             // The dense tag rowid is a stable, indexed browse order for the
             // default local sort. Explicit column sorts keep their semantics.
             let expr = match params.sort.as_str() {
@@ -1125,12 +1129,7 @@ mod search {
                 "name" => "s.name COLLATE NOCASE",
                 _ => "driver.sample_uuid COLLATE BINARY",
             };
-            (
-                "sample_tags driver INDEXED BY idx_sample_tags_tag_sample JOIN samples s ON s.uuid = driver.sample_uuid".to_string(),
-                "driver.tag_uuid = ? AND".to_string(),
-                expr.to_string(),
-                expr.to_string(),
-            )
+            (source, source_filter, expr.to_string(), expr.to_string())
         } else {
             let expr = match params.sort.as_str() {
                 "pack_popularity" => "s.pack_popularity_score",
@@ -1286,7 +1285,11 @@ mod search {
         } else {
             None
         };
-        let (where_sql, mut values) = build_filter(params, !has_query, tag_driver.as_deref())?;
+        let mut filter_params = params.clone();
+        if tag_driver.is_some() {
+            filter_params.tags.clear();
+        }
+        let (where_sql, mut values) = build_filter(&filter_params, !has_query, None)?;
         let (source, source_filter) = if has_query {
             let fts_query = params
                 .query
@@ -1303,11 +1306,13 @@ mod search {
                 "f.samples_fts MATCH ? AND",
             )
         } else if let Some(driver) = tag_driver {
-            values.insert(0, driver.into());
-            (
-                "sample_tags driver INDEXED BY idx_sample_tags_tag_sample JOIN samples s ON s.uuid = driver.sample_uuid",
-                "driver.tag_uuid = ? AND",
-            )
+            let (source, source_filter, tag_values) = tag_driven_source(&params.tags, &driver);
+            values.splice(0..0, tag_values);
+            return query_scalar(
+                conn,
+                &format!("SELECT COUNT(*) FROM {source} WHERE {source_filter} {where_sql}"),
+                &values,
+            );
         } else {
             ("samples s", "")
         };
@@ -1316,6 +1321,21 @@ mod search {
             &format!("SELECT COUNT(*) FROM {source} WHERE {source_filter} {where_sql}"),
             &values,
         )
+    }
+
+    fn tag_driven_source(tags: &[String], driver: &str) -> (String, String, Vec<Value>) {
+        let mut source = "sample_tags driver INDEXED BY idx_sample_tags_tag_sample".to_string();
+        let mut filters = vec!["driver.tag_uuid = ?".to_string()];
+        let mut values = vec![driver.to_string().into()];
+        for (index, tag) in tags.iter().filter(|tag| tag.as_str() != driver).enumerate() {
+            source.push_str(&format!(
+                " JOIN sample_tags tag_{index} INDEXED BY idx_sample_tags_tag_sample ON tag_{index}.sample_uuid = driver.sample_uuid"
+            ));
+            filters.push(format!("tag_{index}.tag_uuid = ?"));
+            values.push(tag.clone().into());
+        }
+        source.push_str(" JOIN samples s ON s.uuid = driver.sample_uuid");
+        (source, format!("{} AND", filters.join(" AND ")), values)
     }
 
     fn json_to_sql_value(value: &serde_json::Value) -> Result<Value, String> {
