@@ -25,12 +25,8 @@ import {
     librarySearch,
     type BrowseMode,
 } from "$lib/library/api"
-import {
-    inLibraryState,
-    mergeBatchFlags,
-} from "$lib/library/session-cache.svelte"
+import { mergeBatchFlags } from "$lib/library/session-cache.svelte"
 import { localizeSampleAsset } from "$lib/library/localize-asset"
-import { syncPackCoversForAssets } from "$lib/shared/pack-cover"
 import {
     materializeSampleInLibrary,
     upsertSampleMetadataOnly,
@@ -74,6 +70,8 @@ export const dataStore = $state({
     tags: [] as string[],
     tag_summary: [] as TagSummaryEntry[],
     total_records: 0,
+    total_exact: true,
+    has_more: false,
 })
 
 export const browseStore = $state({
@@ -85,6 +83,8 @@ type BrowseListCache = {
     identity: string
     sampleAssets: SampleAsset[]
     total_records: number
+    total_exact: boolean
+    has_more: boolean
     tag_summary: TagSummaryEntry[]
     page: number
 }
@@ -115,6 +115,8 @@ function snapshotBrowseListCache(mode: BrowseMode) {
         identity: browseQueryIdentity(mode),
         sampleAssets: dataStore.sampleAssets.slice(),
         total_records: dataStore.total_records,
+        total_exact: dataStore.total_exact,
+        has_more: dataStore.has_more,
         tag_summary: dataStore.tag_summary,
         page: queryStore.page,
     }
@@ -140,6 +142,8 @@ export function switchBrowseMode(mode: BrowseMode) {
     if (cache?.identity === identity && cache.sampleAssets.length > 0) {
         dataStore.sampleAssets = cache.sampleAssets
         dataStore.total_records = cache.total_records
+        dataStore.total_exact = cache.total_exact
+        dataStore.has_more = cache.has_more
         dataStore.tag_summary = cache.tag_summary
         currentQueryIdentity = identity
         queryStore.page = cache.page
@@ -212,6 +216,7 @@ export const storeCallbacks = $state({
 
 let currentQueryIdentity: string = ""
 let alignListAfterBrowseModeSwitch = false
+let libraryRequestId = 0
 
 function applyBrowseModeListReset() {
     if (!alignListAfterBrowseModeSwitch) return
@@ -220,6 +225,7 @@ function applyBrowseModeListReset() {
 }
 
 export function resetAssetList() {
+    libraryRequestId += 1
     currentQueryIdentity = ""
     queryStore.page = 1
     dataStore.sampleAssets = []
@@ -314,6 +320,8 @@ function fetchLibraryAssets() {
         loading.beforeFirstLoad = false
         dataStore.sampleAssets = []
         dataStore.total_records = 0
+        dataStore.total_exact = true
+        dataStore.has_more = false
         dataStore.tag_summary = []
         loading.fetchError = null
         return
@@ -329,6 +337,7 @@ function fetchLibraryAssets() {
 
     loading.assets = true
     loading.fetchError = null
+    const requestId = ++libraryRequestId
 
     librarySearch({
         query: queryStore.query,
@@ -348,6 +357,7 @@ function fetchLibraryAssets() {
         samplesDir: config.samples_dir,
     })
         .then((result) => {
+            if (requestId !== libraryRequestId) return
             loading.assets = false
             loading.beforeFirstLoad = false
             if (browseStore.mode !== "library") {
@@ -368,16 +378,16 @@ function fetchLibraryAssets() {
                 dataStore.sampleAssets = items
                 currentQueryIdentity = identityAfterFetch
             }
-            void syncPackCoversForAssets(result.items).then(() => {
-                inLibraryState.version += 1
-            })
             dataStore.total_records = result.totalRecords
+            dataStore.total_exact = result.totalExact
+            dataStore.has_more = result.hasMore
             storeCallbacks.onbeforetagsupdate?.()
             dataStore.tag_summary = result.tagSummary
             loading.fetchError = null
             applyBrowseModeListReset()
         })
         .catch((error: Error) => {
+            if (requestId !== libraryRequestId) return
             console.error("⚠️ Failed to fetch library assets", error)
             loading.fetchError = error
             loading.assets = false
@@ -444,6 +454,9 @@ function fetchSpliceAssets() {
                 console.info("🔄️ Loaded new assets")
             }
             dataStore.total_records = searchResult.response_metadata.records
+            dataStore.total_exact = true
+            dataStore.has_more =
+                dataStore.sampleAssets.length < dataStore.total_records
 
             storeCallbacks.onbeforetagsupdate?.()
             dataStore.tag_summary = searchResult.tag_summary

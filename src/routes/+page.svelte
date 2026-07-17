@@ -142,7 +142,7 @@
         const currentIndex = dataStore.sampleAssets.findIndex(
             (asset) => asset.uuid === globalAudio.currentAsset?.uuid
         )
-        if (currentIndex > -1) {
+        if (currentIndex > 0) {
             const sampleAsset = dataStore.sampleAssets[currentIndex - 1]
             globalAudio.playSampleAsset(sampleAsset)
             const entryEl = document.getElementById(
@@ -168,6 +168,14 @@
             )
             if (entryEl)
                 entryEl.scrollIntoView({ behavior: "smooth", block: "nearest" })
+        } else if (
+            currentIndex === dataStore.sampleAssets.length - 1 &&
+            browseStore.mode === "library" &&
+            dataStore.has_more &&
+            !loading.assets
+        ) {
+            queryStore.page += 1
+            fetchAssets()
         }
     }
 
@@ -193,7 +201,7 @@
 
             if (
                 browseStore.mode === "library" &&
-                dataStore.sampleAssets.length >= dataStore.total_records
+                !dataStore.has_more
             ) {
                 return
             }
@@ -253,6 +261,7 @@
             <SearchInput
                 bind:value={queryStore.query}
                 onsubmit={fetchAssets}
+                mode={browseStore.mode}
                 class="flex-grow"
                 bind:inputRef={searchInputRef}
             />
@@ -361,7 +370,9 @@
 
         <div class="flex justify-between items-end gap-2">
             <div class="text-muted-foreground text-xs flex-grow">
-                {dataStore.total_records.toLocaleString()} results
+                {dataStore.total_records.toLocaleString()}{dataStore.total_exact
+                    ? ""
+                    : "+"} results
             </div>
             {#if browseStore.mode === "splice"}
                 <Button

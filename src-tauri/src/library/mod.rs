@@ -37,6 +37,17 @@ fn db_path(samples_dir: &str) -> PathBuf {
         .join("library.db")
 }
 
+fn open_read_conn(samples_dir: &str) -> Result<Connection, String> {
+    let conn = Connection::open_with_flags(
+        db_path(samples_dir),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(|e| e.to_string())?;
+    conn.execute_batch("PRAGMA query_only=ON; PRAGMA busy_timeout=3000;")
+        .map_err(|e| e.to_string())?;
+    Ok(conn)
+}
+
 /// Match UI key labels (`C`, `F#`, …). Splice often sends lowercase.
 fn normalize_key(key: Option<&str>) -> Option<String> {
     key.and_then(|k| {
@@ -704,6 +715,8 @@ pub struct PackListEntry {
 pub struct LibrarySearchResponse {
     pub items: Vec<serde_json::Value>,
     pub total_records: i64,
+    pub total_exact: bool,
+    pub has_more: bool,
     pub tag_summary: Vec<TagSummaryEntry>,
 }
 
@@ -717,14 +730,12 @@ pub struct TagSummaryEntry {
 
 #[tauri::command]
 pub async fn library_search(
-    state: State<'_, LibraryState>,
+    _state: State<'_, LibraryState>,
     params: LibrarySearchParams,
 ) -> Result<LibrarySearchResponse, String> {
-    let state = Arc::clone(&state.conn);
     tauri::async_runtime::spawn_blocking(move || {
-        let guard = state.lock().map_err(|e| e.to_string())?;
-        let conn = guard.as_ref().ok_or("Library database is not open")?;
-        search::search(conn, params)
+        let conn = open_read_conn(&params.samples_dir)?;
+        search::search(&conn, params)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -732,14 +743,12 @@ pub async fn library_search(
 
 #[tauri::command]
 pub async fn library_tag_summary(
-    state: State<'_, LibraryState>,
+    _state: State<'_, LibraryState>,
     params: LibrarySearchParams,
 ) -> Result<Vec<TagSummaryEntry>, String> {
-    let state = Arc::clone(&state.conn);
     tauri::async_runtime::spawn_blocking(move || {
-        let guard = state.lock().map_err(|e| e.to_string())?;
-        let conn = guard.as_ref().ok_or("Library database is not open")?;
-        search::tag_summary(conn, params)
+        let conn = open_read_conn(&params.samples_dir)?;
+        search::tag_summary(&conn, params)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -747,14 +756,12 @@ pub async fn library_tag_summary(
 
 #[tauri::command]
 pub async fn library_list_packs(
-    state: State<'_, LibraryState>,
+    _state: State<'_, LibraryState>,
     params: LibraryListPacksParams,
 ) -> Result<Vec<PackListEntry>, String> {
-    let state = Arc::clone(&state.conn);
     tauri::async_runtime::spawn_blocking(move || {
-        let guard = state.lock().map_err(|e| e.to_string())?;
-        let conn = guard.as_ref().ok_or("Library database is not open")?;
-        search::list_packs(conn, &params)
+        let conn = open_read_conn(&params.samples_dir)?;
+        search::list_packs(&conn, &params)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -953,19 +960,19 @@ mod search {
         conn: &Connection,
         params: LibrarySearchParams,
     ) -> Result<LibrarySearchResponse, String> {
-        let (where_sql, where_params) = build_filter(&params)?;
-        let total: i64 = if is_unfiltered(&params) {
-            query_scalar(
+        let has_query = params
+            .query
+            .as_deref()
+            .is_some_and(|query| !query.trim().is_empty());
+        let (where_sql, mut where_params) = build_filter(&params, !has_query)?;
+        let exact_total: Option<i64> = if is_unfiltered(&params) {
+            Some(query_scalar(
                 conn,
                 "SELECT cached_sample_count FROM library_stats WHERE id = 1",
                 &[],
-            )?
+            )?)
         } else {
-            query_scalar(
-                conn,
-                &format!("SELECT COUNT(*) FROM samples s WHERE {}", where_sql),
-                &where_params,
-            )?
+            None
         };
 
         let order = if params.order.eq_ignore_ascii_case("ASC") {
@@ -974,41 +981,76 @@ mod search {
             "DESC"
         };
         let offset = (params.page.max(1) - 1) * params.limit.max(1);
-        let sql = if params.sort == "pack_popularity" {
+        let fetch_limit = params.limit.max(1) + 1;
+        let sql = if has_query {
+            let fts_query = params
+                .query
+                .as_deref()
+                .unwrap_or_default()
+                .trim()
+                .split_whitespace()
+                .map(|word| format!("\"{}\"", word.replace('"', "")))
+                .collect::<Vec<_>>()
+                .join(" ");
+            where_params.insert(0, fts_query.into());
             format!(
-                "SELECT s.uuid FROM samples s WHERE {} ORDER BY s.pack_popularity_score IS NULL, s.pack_popularity_score {} , s.ingested_at DESC LIMIT {} OFFSET {}",
+                "SELECT s.uuid FROM samples_fts f JOIN samples s ON s.uuid = f.sample_uuid
+                 WHERE f.samples_fts MATCH ? AND {} ORDER BY f.rowid DESC LIMIT {} OFFSET {}",
+                where_sql, fetch_limit, offset
+            )
+        } else if params.sort == "pack_popularity" {
+            let index = if params.pack_uuid.is_some() {
+                "idx_library_cached_pack"
+            } else {
+                "idx_library_popularity"
+            };
+            format!(
+                "SELECT s.uuid FROM samples s INDEXED BY {} WHERE {} ORDER BY s.pack_popularity_score IS NULL, s.pack_popularity_score {} , s.ingested_at DESC LIMIT {} OFFSET {}",
+                index,
                 where_sql,
                 if order == "ASC" { "ASC" } else { "DESC" },
-                params.limit,
+                fetch_limit,
                 offset
             )
         } else {
-            let sort_col = match params.sort.as_str() {
-                "bpm" => "s.bpm",
-                "duration" => "s.duration_ms",
-                "key" => "s.key",
-                "ingested_at" => "s.ingested_at",
-                "pack_name" => "s.pack_name",
-                _ => "s.name",
+            let (sort_col, mut sort_index) = match params.sort.as_str() {
+                "bpm" => ("s.bpm", "idx_samples_bpm"),
+                "duration" => ("s.duration_ms", "idx_library_duration"),
+                "key" => ("s.key", "idx_samples_key"),
+                "ingested_at" => ("s.ingested_at", "idx_samples_ingested"),
+                "pack_name" => ("s.pack_name", "idx_library_pack_name"),
+                _ => ("s.name", "idx_library_name"),
             };
+            if params.pack_uuid.is_some() {
+                sort_index = "idx_library_cached_pack";
+            }
             format!(
-                "SELECT s.uuid FROM samples s WHERE {} ORDER BY {} {} LIMIT {} OFFSET {}",
-                where_sql, sort_col, order, params.limit, offset
+                "SELECT s.uuid FROM samples s INDEXED BY {} WHERE {} ORDER BY {} {} LIMIT {} OFFSET {}",
+                sort_index, where_sql, sort_col, order, fetch_limit, offset
             )
         };
 
-        let uuids: Vec<String> = query_rows(conn, &sql, &where_params, |r| r.get(0))?;
+        let mut uuids: Vec<String> = query_rows(conn, &sql, &where_params, |r| r.get(0))?;
+        let has_more = uuids.len() > params.limit.max(1) as usize;
+        if has_more {
+            uuids.pop();
+        }
 
-        let items: Vec<serde_json::Value> = uuids
-            .iter()
-            .filter_map(|uuid| row_to_asset(conn, uuid, &params.samples_dir).ok())
-            .collect();
+        let items = hydrate_assets(conn, &uuids, &params.samples_dir)?;
+        let loaded_through = i64::from(offset) + items.len() as i64;
+        let (total, total_exact) = match exact_total {
+            Some(total) => (total, true),
+            None if !has_more => (loaded_through, true),
+            None => (loaded_through, false),
+        };
 
         let tag_summary = tag_summary(conn, params)?;
 
         Ok(LibrarySearchResponse {
             items,
             total_records: total,
+            total_exact,
+            has_more,
             tag_summary,
         })
     }
@@ -1078,7 +1120,10 @@ mod search {
         Ok(rows.filter_map(|r| r.ok()).collect())
     }
 
-    fn build_filter(params: &LibrarySearchParams) -> Result<(String, Vec<Value>), String> {
+    fn build_filter(
+        params: &LibrarySearchParams,
+        include_query: bool,
+    ) -> Result<(String, Vec<Value>), String> {
         let mut clauses = vec!["s.audio_cached_at > 0".to_string()];
         let mut sql_params: Vec<Value> = vec![];
 
@@ -1117,23 +1162,26 @@ mod search {
         }
         for tag in &params.tags {
             clauses.push(
-                "s.uuid IN (SELECT sample_uuid FROM sample_tags WHERE tag_uuid = ?)".to_string(),
+                "EXISTS (SELECT 1 FROM sample_tags st WHERE st.sample_uuid = s.uuid AND st.tag_uuid = ?)"
+                    .to_string(),
             );
             sql_params.push(tag.clone().into());
         }
-        if let Some(ref q) = params.query {
-            let trimmed = q.trim();
-            if !trimmed.is_empty() {
-                clauses.push(
-                    "s.uuid IN (SELECT sample_uuid FROM samples_fts WHERE samples_fts MATCH ?)"
-                        .to_string(),
-                );
-                let fts_q = trimmed
-                    .split_whitespace()
-                    .map(|w| format!("\"{}\"", w.replace('"', "")))
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                sql_params.push(fts_q.into());
+        if include_query {
+            if let Some(ref q) = params.query {
+                let trimmed = q.trim();
+                if !trimmed.is_empty() {
+                    clauses.push(
+                        "s.uuid IN (SELECT sample_uuid FROM samples_fts WHERE samples_fts MATCH ?)"
+                            .to_string(),
+                    );
+                    let fts_q = trimmed
+                        .split_whitespace()
+                        .map(|w| format!("\"{}\"", w.replace('"', "")))
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    sql_params.push(fts_q.into());
+                }
             }
         }
         if let Some(ref pack_uuid) = params.pack_uuid {
@@ -1148,10 +1196,7 @@ mod search {
         conn: &Connection,
         params: &LibraryListPacksParams,
     ) -> Result<Vec<PackListEntry>, String> {
-        let mut clauses = vec![
-            "EXISTS (SELECT 1 FROM samples s WHERE s.pack_uuid = p.uuid AND s.audio_cached_at > 0)"
-                .to_string(),
-        ];
+        let mut clauses = Vec::new();
         let mut sql_params: Vec<Value> = vec![];
         if let Some(ref q) = params.query {
             let trimmed = q.trim();
@@ -1160,9 +1205,15 @@ mod search {
                 sql_params.push(format!("%{}%", trimmed).into());
             }
         }
+        let filter = if clauses.is_empty() {
+            String::new()
+        } else {
+            format!("WHERE {}", clauses.join(" AND "))
+        };
         let sql = format!(
-            "SELECT p.uuid, p.name, p.cover_relative_path FROM packs p WHERE {} ORDER BY p.name COLLATE NOCASE LIMIT 80",
-            clauses.join(" AND ")
+            "SELECT p.uuid, p.name, p.cover_relative_path
+             FROM library_pack_counts c JOIN packs p ON p.uuid = c.pack_uuid
+             {filter} ORDER BY p.name COLLATE NOCASE LIMIT 80"
         );
         query_rows(conn, &sql, &sql_params, |r| {
             Ok(PackListEntry {
@@ -1173,138 +1224,150 @@ mod search {
         })
     }
 
-    fn row_to_asset(
-        conn: &Connection,
-        uuid: &str,
-        samples_dir: &str,
-    ) -> Result<serde_json::Value, String> {
-        type RowData = (
-            String,
-            String,
-            String,
-            i64,
-            Option<i64>,
-            Option<String>,
-            Option<String>,
-            String,
-            i32,
-            Option<String>,
-            String,
-            String,
-            Option<String>,
-            Option<String>,
-        );
+    struct AssetRow {
+        uuid: String,
+        name: String,
+        audio_rel: String,
+        duration: i64,
+        bpm: Option<i64>,
+        key: Option<String>,
+        chord_type: Option<String>,
+        category: String,
+        favorite: bool,
+        waveform_rel: Option<String>,
+        pack_uuid: String,
+        pack_name: String,
+        cover_rel: Option<String>,
+        cover_source_url: Option<String>,
+    }
 
-        let row: RowData = conn
-            .query_row(
+    fn hydrate_assets(
+        conn: &Connection,
+        uuids: &[String],
+        samples_dir: &str,
+    ) -> Result<Vec<serde_json::Value>, String> {
+        if uuids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let placeholders = uuids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let values = uuids.iter().cloned().map(Value::from).collect::<Vec<_>>();
+        let rows = query_rows(
+            conn,
+            &format!(
                 "SELECT s.uuid, s.name, s.relative_audio_path, s.duration_ms, s.bpm, s.key, s.chord_type,
                         s.asset_category_slug, s.favorite, s.waveform_relative_path,
                         p.uuid, p.name, p.cover_relative_path, p.cover_source_url
-                 FROM samples s
-                 JOIN packs p ON p.uuid = s.pack_uuid
-                 WHERE s.uuid = ?1",
-                params![uuid],
-                |r| {
-                    Ok((
-                        r.get(0)?,
-                        r.get(1)?,
-                        r.get(2)?,
-                        r.get(3)?,
-                        r.get(4)?,
-                        r.get(5)?,
-                        r.get(6)?,
-                        r.get(7)?,
-                        r.get(8)?,
-                        r.get(9)?,
-                        r.get(10)?,
-                        r.get(11)?,
-                        r.get(12)?,
-                        r.get(13)?,
-                    ))
-                },
-            )
-            .map_err(|e| e.to_string())?;
+                 FROM samples s JOIN packs p ON p.uuid = s.pack_uuid
+                 WHERE s.uuid IN ({placeholders})"
+            ),
+            &values,
+            |r| {
+                Ok(AssetRow {
+                    uuid: r.get(0)?,
+                    name: r.get(1)?,
+                    audio_rel: r.get(2)?,
+                    duration: r.get(3)?,
+                    bpm: r.get(4)?,
+                    key: r.get(5)?,
+                    chord_type: r.get(6)?,
+                    category: r.get(7)?,
+                    favorite: r.get::<_, i32>(8)? != 0,
+                    waveform_rel: r.get(9)?,
+                    pack_uuid: r.get(10)?,
+                    pack_name: r.get(11)?,
+                    cover_rel: r.get(12)?,
+                    cover_source_url: r.get(13)?,
+                })
+            },
+        )?;
+        let mut rows_by_uuid = rows
+            .into_iter()
+            .map(|row| (row.uuid.clone(), row))
+            .collect::<HashMap<_, _>>();
 
-        let (
-            uuid,
-            name,
-            audio_rel,
-            duration,
-            bpm,
-            key,
-            chord_type,
-            category,
-            _favorite,
-            waveform_rel,
-            pack_uuid,
-            pack_name,
-            cover_rel,
-            cover_source_url,
-        ) = row;
+        let mut tags_by_uuid: HashMap<String, Vec<serde_json::Value>> = HashMap::new();
+        let tags = query_rows(
+            conn,
+            &format!(
+                "SELECT st.sample_uuid, t.uuid, t.label
+                 FROM sample_tags st JOIN tags t ON t.uuid = st.tag_uuid
+                 WHERE st.sample_uuid IN ({placeholders})"
+            ),
+            &values,
+            |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    serde_json::json!({
+                        "uuid": r.get::<_, String>(1)?,
+                        "label": r.get::<_, String>(2)?,
+                        "__typename": "Tag"
+                    }),
+                ))
+            },
+        )?;
+        for (sample_uuid, tag) in tags {
+            tags_by_uuid.entry(sample_uuid).or_default().push(tag);
+        }
 
-        let audio_abs = PathBuf::from(samples_dir).join(&audio_rel);
-        let audio_url = format!("file://{}", audio_abs.display());
-        let waveform_url = waveform_rel
-            .map(|w| format!("file://{}", PathBuf::from(samples_dir).join(w).display()));
-        let cover_url = cover_rel
-            .map(|cover_rel| {
-                format!(
+        Ok(uuids
+            .iter()
+            .filter_map(|uuid| {
+                let row = rows_by_uuid.remove(uuid)?;
+                let tags = tags_by_uuid.remove(uuid).unwrap_or_default();
+                let audio_url = format!(
                     "file://{}",
-                    PathBuf::from(samples_dir).join(cover_rel).display()
-                )
-            })
-            .unwrap_or_default();
-
-        let tags: Vec<serde_json::Value> = conn
-            .prepare(
-                "SELECT t.uuid, t.label FROM tags t
-                 INNER JOIN sample_tags st ON st.tag_uuid = t.uuid
-                 WHERE st.sample_uuid = ?1",
-            )
-            .map_err(|e| e.to_string())?
-            .query_map(params![uuid], |r| {
-                Ok(serde_json::json!({
-                    "uuid": r.get::<_, String>(0)?,
-                    "label": r.get::<_, String>(1)?,
-                    "__typename": "Tag"
+                    PathBuf::from(samples_dir).join(&row.audio_rel).display()
+                );
+                let waveform_url = row
+                    .waveform_rel
+                    .map(|path| {
+                        format!(
+                            "file://{}",
+                            PathBuf::from(samples_dir).join(path).display()
+                        )
+                    })
+                    .unwrap_or_default();
+                let cover_url = row
+                    .cover_rel
+                    .map(|path| {
+                        format!(
+                            "file://{}",
+                            PathBuf::from(samples_dir).join(path).display()
+                        )
+                    })
+                    .unwrap_or_default();
+                Some(serde_json::json!({
+                    "uuid": row.uuid,
+                    "name": row.name,
+                    "duration": row.duration,
+                    "bpm": row.bpm,
+                    "key": row.key,
+                    "chord_type": row.chord_type,
+                    "asset_category_slug": row.category,
+                    "favorite": row.favorite,
+                    "asset_type_slug": "sample",
+                    "asset_prices": [],
+                    "__typename": "SampleAsset",
+                    "tags": tags,
+                    "files": [
+                        { "url": audio_url, "__typename": "AssetFile" },
+                        { "url": waveform_url, "__typename": "AssetFile" }
+                    ],
+                    "parents": {
+                        "items": [{
+                            "uuid": row.pack_uuid,
+                            "name": row.pack_name,
+                            "permalink_slug": "",
+                            "permalink_base_url": "",
+                            "cover_source_url": row.cover_source_url,
+                            "files": [{ "url": cover_url, "asset_file_type_slug": "cover_image", "__typename": "AssetFile" }],
+                            "__typename": "PackAsset"
+                        }],
+                        "__typename": "AssetPage"
+                    }
                 }))
             })
-            .map_err(|e| e.to_string())?
-            .filter_map(|r| r.ok())
-            .collect();
-
-        let wf = waveform_url.unwrap_or_else(|| "".to_string());
-
-        Ok(serde_json::json!({
-            "uuid": uuid,
-            "name": name,
-            "duration": duration,
-            "bpm": bpm,
-            "key": key,
-            "chord_type": chord_type,
-            "asset_category_slug": category,
-            "favorite": _favorite != 0,
-            "asset_type_slug": "sample",
-            "asset_prices": [],
-            "__typename": "SampleAsset",
-            "tags": tags,
-            "files": [
-                { "url": audio_url, "__typename": "AssetFile" },
-                { "url": wf, "__typename": "AssetFile" }
-            ],
-            "parents": {
-                "items": [{
-                    "uuid": pack_uuid,
-                    "name": pack_name,
-                    "permalink_slug": "",
-                    "permalink_base_url": "",
-                    "cover_source_url": cover_source_url,
-                    "files": [{ "url": cover_url, "asset_file_type_slug": "cover_image", "__typename": "AssetFile" }],
-                    "__typename": "PackAsset"
-                }],
-                "__typename": "AssetPage"
-            }
-        }))
+            .collect())
     }
 }
 
@@ -1912,6 +1975,43 @@ mod tests {
         .unwrap();
         assert_eq!(by_key.total_records, 1);
 
+        ingest::upsert(
+            &conn,
+            UpsertPayload {
+                asset: sample_asset("sample-2", "pack-1", "My Pack"),
+                relative_audio_path: "My_Pack/kick-2.mp3".into(),
+                waveform_relative_path: None,
+                audio_cached_at: 1,
+                favorite: Some(false),
+            },
+        )
+        .unwrap();
+
+        let paged = search::search(
+            &conn,
+            LibrarySearchParams {
+                query: None,
+                tags: vec![],
+                page: 1,
+                limit: 1,
+                sort: "ingested_at".into(),
+                order: "DESC".into(),
+                favorites_only: false,
+                asset_category_slug: Some("oneshot".into()),
+                key: None,
+                chord_type: None,
+                min_bpm: None,
+                max_bpm: None,
+                bpm: None,
+                pack_uuid: None,
+                samples_dir: dir.path().to_str().unwrap().into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(paged.total_records, 1);
+        assert!(!paged.total_exact);
+        assert!(paged.has_more);
+
         let combined = search::search(
             &conn,
             LibrarySearchParams {
@@ -1935,7 +2035,17 @@ mod tests {
         .unwrap();
         assert_eq!(combined.total_records, 1);
         assert_eq!(combined.items[0]["uuid"], "sample-1");
-        assert_eq!(combined.tag_summary[0].count, 1);
+        assert_eq!(combined.tag_summary[0].count, 2);
+
+        let packs = search::list_packs(
+            &conn,
+            &LibraryListPacksParams {
+                query: Some("My".into()),
+                samples_dir: dir.path().to_str().unwrap().into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(packs.len(), 1);
     }
 
     #[test]

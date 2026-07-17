@@ -8,17 +8,20 @@
         AutocompleteSuggestion,
         SoundsSearchAutocompleteResponse,
     } from "$lib/splice/types"
+    import type { BrowseMode } from "$lib/library/api"
 
     let {
         value = $bindable(),
         onsubmit,
         class: className,
         inputRef = $bindable(null!),
+        mode,
     }: {
         value: string
         onsubmit: () => void
         class?: string
         inputRef?: HTMLInputElement
+        mode: BrowseMode
     } = $props()
 
     let lastSubmittedValue: string
@@ -113,6 +116,10 @@
                     debounce(submit)
                 }
                 const termForRequest = value
+                if (mode === "library") {
+                    suggestions = []
+                    return
+                }
                 querySplice(SoundsSearchAutocomplete, { term: termForRequest }).then(
                     (response) => {
                         if (termForRequest !== value) return

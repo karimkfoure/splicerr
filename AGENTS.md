@@ -169,8 +169,8 @@ cd src-tauri && cargo test mirror
 - `browseStore.mode`: `"splice"` | `"library"`.
 - Tab change: `switchBrowseMode()` (per-tab list cache, scroll reset via `onBrowseModeListReset`); do not hand-roll `resetAssetList()` + `fetchAssets()` on tabs.
 - Sort: reset on tab change via `resetSortForBrowseMode()` (`relevance` / Splice, `ingested_at` / library); `ensure*CompatibleSort()` remains a safety net on fetch.
-- Library pagination: `LIBRARY_PER_PAGE` (local SQLite); Splice stays `PER_PAGE` + infinite scroll.
-- Local library reads run on a blocking worker, never Tauri's main thread. Keep the list DB-native: one bounded SQLite page, exact filters/counts, and global tag facets from trigger-maintained summary tables; do not reuse remote listing state or recompute whole-library facets during interaction.
+- Library pagination: `LIBRARY_PER_PAGE` (local SQLite); Splice stays `PER_PAGE` + infinite scroll. Filtered library pages use `LIMIT + 1` and progressive `N+` totals instead of blocking on exact `COUNT(*)`; unfiltered totals remain exact through `library_stats`.
+- Local library reads use independent read-only SQLite connections on blocking workers. Each page hydrates samples/packs and tags in two batch queries; supported sorts use dedicated indexes, pack options use trigger-maintained `library_pack_counts`, and text search is driven directly by FTS. Do not serialize browse reads behind the writer connection, reuse remote autocomplete, or recompute whole-library facets during interaction.
 - Filters (key, BPM, tags): `resetAssetList()` + `fetchAssets()` so pagination identity resets.
 
 ### GraphQL

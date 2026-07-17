@@ -286,5 +286,61 @@ pub fn migrate(conn: &Connection) -> Result<(), String> {
         conn.execute("INSERT INTO schema_migrations (version) VALUES (8)", [])
             .map_err(|e| e.to_string())?;
     }
+    if v < 9 {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS library_pack_counts (
+                pack_uuid TEXT PRIMARY KEY,
+                sample_count INTEGER NOT NULL
+            );
+
+            CREATE TRIGGER IF NOT EXISTS library_pack_counts_sample_insert
+            AFTER INSERT ON samples
+            WHEN NEW.audio_cached_at > 0
+            BEGIN
+                INSERT INTO library_pack_counts (pack_uuid, sample_count)
+                VALUES (NEW.pack_uuid, 1)
+                ON CONFLICT(pack_uuid) DO UPDATE
+                SET sample_count = sample_count + 1;
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS library_pack_counts_sample_delete
+            AFTER DELETE ON samples
+            WHEN OLD.audio_cached_at > 0
+            BEGIN
+                UPDATE library_pack_counts SET sample_count = sample_count - 1
+                WHERE pack_uuid = OLD.pack_uuid;
+                DELETE FROM library_pack_counts WHERE sample_count <= 0;
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS library_pack_counts_sample_update
+            AFTER UPDATE OF pack_uuid, audio_cached_at ON samples
+            WHEN OLD.pack_uuid != NEW.pack_uuid OR
+                 (OLD.audio_cached_at > 0) != (NEW.audio_cached_at > 0)
+            BEGIN
+                UPDATE library_pack_counts SET sample_count = sample_count - 1
+                WHERE pack_uuid = OLD.pack_uuid AND OLD.audio_cached_at > 0;
+                DELETE FROM library_pack_counts WHERE sample_count <= 0;
+                INSERT INTO library_pack_counts (pack_uuid, sample_count)
+                SELECT NEW.pack_uuid, 1 WHERE NEW.audio_cached_at > 0
+                ON CONFLICT(pack_uuid) DO UPDATE
+                SET sample_count = sample_count + 1;
+            END;
+
+            CREATE INDEX IF NOT EXISTS idx_library_name
+                ON samples(name) WHERE audio_cached_at > 0;
+            CREATE INDEX IF NOT EXISTS idx_library_pack_name
+                ON samples(pack_name) WHERE audio_cached_at > 0;
+            CREATE INDEX IF NOT EXISTS idx_library_duration
+                ON samples(duration_ms) WHERE audio_cached_at > 0;
+            CREATE INDEX IF NOT EXISTS idx_library_popularity
+                ON samples(pack_popularity_score DESC, ingested_at DESC)
+                WHERE audio_cached_at > 0;
+            CREATE INDEX IF NOT EXISTS idx_library_cached_pack
+                ON samples(pack_uuid) WHERE audio_cached_at > 0;",
+        )
+        .map_err(|e| e.to_string())?;
+        conn.execute("INSERT INTO schema_migrations (version) VALUES (9)", [])
+            .map_err(|e| e.to_string())?;
+    }
     Ok(())
 }

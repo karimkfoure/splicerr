@@ -29,9 +29,16 @@
         void inLibraryState.version
         const packName = pack?.name
         const remote = pack ? resolvePackCoverRemoteUrl(pack) : undefined
+        const embedded = pack?.files?.find(
+            (file) => file.asset_file_type_slug === "cover_image"
+        )?.url
         imgFailed = false
         if (!packName) {
             displaySrc = ""
+            return
+        }
+        if (embedded && !isRemoteUrl(embedded)) {
+            displaySrc = embedded
             return
         }
         void (async () => {

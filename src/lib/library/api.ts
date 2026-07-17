@@ -296,6 +296,8 @@ export async function mirrorRetryFailed(jobId: number) {
 export type LibrarySearchResponse = {
     items: SampleAsset[]
     totalRecords: number
+    totalExact: boolean
+    hasMore: boolean
     tagSummary: TagSummaryEntry[]
 }
 
@@ -303,6 +305,8 @@ export async function librarySearch(params: LibrarySearchParams) {
     const res = await invoke<{
         items: SampleAsset[]
         totalRecords: number
+        totalExact: boolean
+        hasMore: boolean
         tagSummary: TagSummaryEntry[]
     }>("library_search", {
         params: {
@@ -326,6 +330,8 @@ export async function librarySearch(params: LibrarySearchParams) {
     return {
         items: res.items,
         totalRecords: res.totalRecords,
+        totalExact: res.totalExact,
+        hasMore: res.hasMore,
         tagSummary: res.tagSummary,
     } satisfies LibrarySearchResponse
 }
