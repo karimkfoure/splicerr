@@ -992,7 +992,6 @@ mod search {
                     .map(|count| (tag.clone(), count))
                 })
                 .min_by_key(|(_, count)| *count)
-                .filter(|(_, count)| *count <= 50_000)
                 .map(|(tag, _)| tag)
         } else {
             None
@@ -1034,6 +1033,9 @@ mod search {
         } else if let Some(tag_driver) = tag_driver {
             where_params.insert(0, tag_driver.into());
             let sort_sql = match params.sort.as_str() {
+                // Backfill inserts recent rows sparsely across tags. Walking the
+                // dense end avoids scanning millions of rows before page one.
+                "ingested_at" => "driver.rowid ASC".to_string(),
                 "pack_popularity" => format!(
                     "s.pack_popularity_score IS NULL, s.pack_popularity_score {}, s.ingested_at DESC",
                     if order == "ASC" { "ASC" } else { "DESC" }
@@ -1127,9 +1129,9 @@ mod search {
 
     pub fn tag_summary(
         conn: &Connection,
-        _params: LibrarySearchParams,
+        params: LibrarySearchParams,
     ) -> Result<Vec<TagSummaryEntry>, String> {
-        query_rows(
+        let popular = query_rows(
             conn,
             "SELECT t.uuid, t.label, c.sample_count
              FROM library_tag_counts c
@@ -1156,7 +1158,55 @@ mod search {
                     typename: "TagSummaryEntry".into(),
                 })
             },
-        )
+        )?;
+        if params.tags.is_empty() {
+            return Ok(popular);
+        }
+
+        let placeholders = params
+            .tags
+            .iter()
+            .map(|_| "?")
+            .collect::<Vec<_>>()
+            .join(",");
+        let values = params.tags.into_iter().map(Value::from).collect::<Vec<_>>();
+        let selected = query_rows(
+            conn,
+            &format!(
+                "SELECT t.uuid, t.label, c.sample_count
+                 FROM library_tag_counts c JOIN tags t ON t.uuid = c.tag_uuid
+                 WHERE t.uuid IN ({placeholders})"
+            ),
+            &values,
+            |r| {
+                let uuid: String = r.get(0)?;
+                let label: String = r.get(1)?;
+                let count: i64 = r.get(2)?;
+                Ok(TagSummaryEntry {
+                    count,
+                    tag: serde_json::json!({
+                        "uuid": uuid,
+                        "label": label,
+                        "taxonomy": { "uuid": "", "name": "Library", "__typename": "Taxonomy" },
+                        "__typename": "Tag"
+                    }),
+                    typename: "TagSummaryEntry".into(),
+                })
+            },
+        )?;
+        let selected_ids = selected
+            .iter()
+            .filter_map(|entry| entry.tag["uuid"].as_str().map(str::to_owned))
+            .collect::<std::collections::HashSet<String>>();
+        Ok(selected
+            .into_iter()
+            .chain(popular.into_iter().filter(|entry| {
+                entry.tag["uuid"]
+                    .as_str()
+                    .map(|uuid| !selected_ids.contains(uuid))
+                    .unwrap_or(true)
+            }))
+            .collect())
     }
 
     fn param_refs(params: &[Value]) -> Vec<&dyn rusqlite::ToSql> {
@@ -1187,7 +1237,8 @@ mod search {
         let rows = stmt
             .query_map(refs.as_slice(), f)
             .map_err(|e| e.to_string())?;
-        Ok(rows.filter_map(|r| r.ok()).collect())
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| e.to_string())
     }
 
     fn build_filter(
@@ -2109,6 +2160,7 @@ mod tests {
         assert_eq!(combined.total_records, 1);
         assert_eq!(combined.items[0]["uuid"], "sample-1");
         assert_eq!(combined.tag_summary[0].count, 2);
+        assert_eq!(combined.tag_summary[0].tag["uuid"], "t1");
 
         conn.execute(
             "UPDATE samples SET bitrate_kbps = 192 WHERE uuid = 'sample-1'",

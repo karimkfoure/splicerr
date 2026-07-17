@@ -369,9 +369,11 @@
 
         <div class="flex justify-between items-end gap-2">
             <div class="text-muted-foreground text-xs flex-grow">
-                {dataStore.total_records.toLocaleString()}{dataStore.total_exact
-                    ? ""
-                    : "+"} results
+                {#if browseStore.mode === "splice"}
+                    {dataStore.total_records.toLocaleString()} results
+                {:else}
+                    Local results
+                {/if}
             </div>
             {#if browseStore.mode === "splice"}
                 <Button
