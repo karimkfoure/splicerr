@@ -212,7 +212,8 @@
         </div>
     </div>
     <Waveform
-        src={sampleAsset.files[1].url}
+        relativeAudioPath={sampleRelativePath(sampleAsset)}
+        enabled={inLibrary}
         progress={selected ? globalAudio.progress() : 0}
         onseek={(progress) => {
             const startTime = progress * (sampleAsset.duration / 1000)

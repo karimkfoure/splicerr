@@ -68,7 +68,7 @@ struct ExportPlan {
     grid_confident: bool,
 }
 
-fn safe_relative_path(relative: &str) -> Result<PathBuf, String> {
+pub(crate) fn safe_relative_path(relative: &str) -> Result<PathBuf, String> {
     let path = Path::new(relative);
     if path.is_absolute() || relative.is_empty() {
         return Err("Audio path must be a non-empty relative path".into());
@@ -155,7 +155,7 @@ fn export_plan(
     }
 }
 
-fn decode_mp3(path: &Path) -> Result<(u32, u16, Vec<f32>), String> {
+pub(crate) fn decode_mp3(path: &Path) -> Result<(u32, u16, Vec<f32>), String> {
     let file = File::open(path).map_err(|error| format!("Open MP3 {}: {error}", path.display()))?;
     let stream = MediaSourceStream::new(Box::new(file), MediaSourceStreamOptions::default());
     let mut hint = Hint::new();

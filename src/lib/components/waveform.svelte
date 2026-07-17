@@ -1,128 +1,80 @@
 <script lang="ts">
-    import { loading } from "$lib/shared/loading.svelte"
-    import { uid } from "$lib/shared/uid"
-    import { loadWaveformFromSrc } from "$lib/shared/waveform-data"
-    import { inview } from "svelte-inview"
     import { cn } from "$lib/utils"
-
-    const key = `progress-gradient-${uid()}`
+    import { loadLocalWaveform } from "$lib/library/local-waveform"
 
     let ref = null! as HTMLButtonElement
-
+    let canvas = null! as HTMLCanvasElement
     let {
-        src,
+        relativeAudioPath,
+        enabled,
         progress = 0,
         class: className,
         onseek,
     }: {
-        src: string
+        relativeAudioPath: string
+        enabled: boolean
         progress?: number
         class?: string
         onseek: (progress: number) => void
     } = $props()
 
-    let waveform = $state<number[]>(new Array(800).fill(0))
-
-    let loadedSrc = $state("")
-
-    let isLoading = $state(false)
-
-    let isInView = $state(true)
-
-    const loaded = $derived(loadedSrc == src)
+    let bins = $state<[number, number, number][]>([])
+    let loadedPath = $state("")
 
     $effect(() => {
-        if (!isLoading && !loaded && !loading.fetchError) {
-            fetchWaveform()
-        }
+        if (!enabled || !relativeAudioPath || loadedPath === relativeAudioPath) return
+        const requested = relativeAudioPath
+        const timer = window.setTimeout(() => {
+            loadLocalWaveform(requested)
+                .then((result) => {
+                    if (requested !== relativeAudioPath) return
+                    bins = result.bins
+                    loadedPath = requested
+                })
+                .catch((error) =>
+                    console.debug("Local waveform unavailable", error)
+                )
+        }, 80)
+        return () => window.clearTimeout(timer)
     })
 
-    function fetchWaveform() {
-        if (!src) return
-        isLoading = true
-        loading.waveformsCount += 1
-        const loadingSrc = src
-        loadWaveformFromSrc(loadingSrc)
-            .then((data) => {
-                if (loadingSrc == src) {
-                    waveform = data
-                    loadedSrc = src
-                } else {
-                    console.info("🕜 Ignored stale waveform")
-                }
-            })
-            .catch((error: Error) => {
-                console.error("⚠️ Failed loading waveform", error)
-            })
-            .finally(() => {
-                loading.waveformsCount -= 1
-                isLoading = false
-            })
-    }
-
-    function generateWaveformPath(data: number[]) {
-        const pathData = []
-        const width = 1000 // Total width of the SVG
-        const height = 200 // Total height of the SVG
-        const midHeight = height / 2
-        const step = width / data.length // Horizontal step size for each data point
-
-        // Top half of the waveform
-        pathData.push(`M 0 ${midHeight}`)
-        data.forEach((value, index) => {
-            const x = index * step
-            const y = midHeight - value * midHeight // Flip vertically
-            pathData.push(`L ${x} ${y}`)
-        })
-
-        // Bottom half (mirrored) of the waveform
-        for (let i = data.length - 1; i >= 0; i--) {
-            const x = i * step
-            const y = midHeight + data[i] * midHeight
-            pathData.push(`L ${x} ${y}`)
+    $effect(() => {
+        if (!canvas || !bins.length) return
+        const context = canvas.getContext("2d")
+        if (!context) return
+        const { width, height } = canvas
+        context.clearRect(0, 0, width, height)
+        const columnWidth = width / bins.length
+        for (let index = 0; index < bins.length; index += 1) {
+            const [low, mid, high] = bins[index]
+            const peak = Math.max(low, mid, high)
+            if (!peak) continue
+            const scale = 255 / peak
+            const barHeight = Math.max(2, (peak / 255) * height)
+            context.fillStyle = `rgb(${Math.round(low * scale)}, ${Math.round(mid * scale)}, ${Math.round(high * scale)})`
+            context.fillRect(
+                index * columnWidth,
+                (height - barHeight) / 2,
+                Math.max(1, columnWidth - 1),
+                barHeight
+            )
         }
-
-        pathData.push("Z") // Close the path
-        return pathData.join(" ")
-    }
+    })
 </script>
 
 <button
-    class={cn(className, "focus:outline-none cursor-grab")}
-    use:inview
+    class={cn(className, "relative flex items-center focus:outline-none cursor-grab")}
     tabindex={-1}
-    oninview_change={(event) => (isInView = event.detail.inView)}
     onclick={(event) => {
         const rect = ref.getBoundingClientRect()
-        progress = (event.clientX - rect.left) / rect.width
-        onseek(progress)
+        onseek((event.clientX - rect.left) / rect.width)
     }}
     bind:this={ref}
     aria-label="Waveform"
 >
-    {#if waveform}
-        <svg
-            class={cn(
-                "size-full transition-transform duration-1000",
-                isInView && "",
-                !loaded && "scale-y-0"
-            )}
-            viewBox={`0 0 1000 200`}
-            preserveAspectRatio="none"
-        >
-            <defs>
-                <linearGradient id={key} x1="0" y1="0" x2="1" y2="0">
-                    <stop
-                        offset={`${progress * 100 || 0}%`}
-                        stop-color="hsl(var(--primary))"
-                    />
-                    <stop
-                        offset={`${progress * 100 || 0}%`}
-                        stop-color="hsl(var(--muted-foreground))"
-                    />
-                </linearGradient>
-            </defs>
-            <path d={generateWaveformPath(waveform)} fill={`url(#${key})`} />
-        </svg>
-    {/if}
+    <canvas bind:this={canvas} width="320" height="96" class="size-full"></canvas>
+    <span
+        class="pointer-events-none absolute inset-y-0 left-0 bg-white/20 mix-blend-screen"
+        style:width={`${Math.max(0, Math.min(1, progress)) * 100}%`}
+    ></span>
 </button>

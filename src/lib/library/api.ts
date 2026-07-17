@@ -103,6 +103,19 @@ export async function exportMissingFavoriteWavs(samplesDir: string) {
     })
 }
 
+export type LocalWaveformResult = {
+    bins: [number, number, number][]
+    decodeMs: number
+    analyzeMs: number
+}
+
+export async function localAudioWaveform(params: {
+    samplesDir: string
+    relativeAudioPath: string
+}) {
+    return invoke<LocalWaveformResult>("local_audio_waveform", { params })
+}
+
 export type LibrarySampleFlags = {
     inLibrary: boolean
     favorite: boolean

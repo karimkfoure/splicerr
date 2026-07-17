@@ -14,7 +14,8 @@ export function localizeSampleAsset(asset: SampleAsset): SampleAsset {
         ...asset,
         files: asset.files.map((f, i) => ({
             ...f,
-            // Waveform stays file:// so Waveform can readFile (gzip JSON sidecar).
+            // Preserve sidecar URLs for compatibility/auditing. The visible
+            // waveform is computed locally from the cached MP3 instead.
             url: i === 0 ? localizeUrl(f.url) : f.url,
         })),
         parents: {
