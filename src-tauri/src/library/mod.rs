@@ -997,7 +997,8 @@ mod search {
         } else {
             None
         };
-        let exact_total: Option<i64> = if is_unfiltered(&params) {
+        let unfiltered = is_unfiltered(&params);
+        let exact_total: Option<i64> = if unfiltered {
             Some(query_scalar(
                 conn,
                 "SELECT cached_sample_count FROM library_stats WHERE id = 1",
@@ -1050,7 +1051,7 @@ mod search {
                  WHERE driver.tag_uuid = ? AND {} ORDER BY {} LIMIT {} OFFSET {}",
                 where_sql, sort_sql, fetch_limit, offset
             )
-        } else if params.sort == "pack_popularity" {
+        } else if params.sort == "pack_popularity" && unfiltered {
             let index = if params.pack_uuid.is_some() {
                 "idx_library_cached_pack"
             } else {
@@ -1064,7 +1065,7 @@ mod search {
                 fetch_limit,
                 offset
             )
-        } else {
+        } else if unfiltered {
             let (sort_col, mut sort_index) = match params.sort.as_str() {
                 "bpm" => ("s.bpm", "idx_samples_bpm"),
                 "duration" => ("s.duration_ms", "idx_library_duration"),
@@ -1079,6 +1080,23 @@ mod search {
             format!(
                 "SELECT s.uuid FROM samples s INDEXED BY {} WHERE {} ORDER BY {} {} LIMIT {} OFFSET {}",
                 sort_index, where_sql, sort_col, order, fetch_limit, offset
+            )
+        } else {
+            let sort_sql = match params.sort.as_str() {
+                "pack_popularity" => format!(
+                    "s.pack_popularity_score IS NULL, s.pack_popularity_score {}, s.ingested_at DESC",
+                    if order == "ASC" { "ASC" } else { "DESC" }
+                ),
+                "bpm" => format!("s.bpm {order}"),
+                "duration" => format!("s.duration_ms {order}"),
+                "key" => format!("s.key {order}"),
+                "pack_name" => format!("s.pack_name {order}"),
+                "name" => format!("s.name {order}"),
+                _ => format!("s.ingested_at {order}"),
+            };
+            format!(
+                "SELECT s.uuid FROM samples s WHERE {} ORDER BY {} LIMIT {} OFFSET {}",
+                where_sql, sort_sql, fetch_limit, offset
             )
         };
 
