@@ -43,7 +43,14 @@ try {
         const requestedPage = checkpoint.nextPage
         const json = await queryGraphql(page, requestedPage)
         const result = json?.data?.assetsSearch
-        if (!result) throw new Error((json?.errors ?? []).map((error) => error.message).join("; ") || "missing assetsSearch")
+        if (!result) {
+            const graphqlError = (json?.errors ?? []).map((error) => error.message).join("; ") || "missing assetsSearch"
+            if (checkpoint.listed > 0 && /400:\s*Bad Request/i.test(graphqlError)) {
+                finish(checkpoint, `endpoint_rejected_page_${requestedPage}`)
+                break
+            }
+            throw new Error(graphqlError)
+        }
 
         const currentPage = Number(result.pagination_metadata?.currentPage ?? requestedPage)
         const items = result.items ?? []
@@ -97,15 +104,17 @@ WHERE id=1;
 COMMIT;`)
 }
 
-function finish(checkpoint, reason, result) {
+function finish(checkpoint, reason, result = null) {
+    const remoteRecords = result?.response_metadata?.records ?? checkpoint.remoteRecords
+    const reportedPages = result?.pagination_metadata?.totalPages ?? checkpoint.reportedPages
     sqlite(`UPDATE pack_popularity_backfill_checkpoint SET
-  remote_records=${sqlNumber(result.response_metadata?.records)},
-  reported_pages=${sqlNumber(result.pagination_metadata?.totalPages)},
+  remote_records=${sqlNumber(remoteRecords)},
+  reported_pages=${sqlNumber(reportedPages)},
   done=1,
   stop_reason=${sql(reason)},
   updated_at=${Date.now()}
 WHERE id=1;`)
-    log(`complete reason=${reason} requestedPage=${checkpoint.nextPage} listed=${checkpoint.listed} localRanked=${countRankedLocal()}/${countLocalPacks()} remoteRecords=${result.response_metadata?.records ?? "?"} reportedPages=${result.pagination_metadata?.totalPages ?? "?"}`)
+    log(`complete reason=${reason} requestedPage=${checkpoint.nextPage} listed=${checkpoint.listed} localRanked=${countRankedLocal()}/${countLocalPacks()} remoteRecords=${remoteRecords ?? "?"} reportedPages=${reportedPages ?? "?"}`)
 }
 
 function ensureSchema() {
