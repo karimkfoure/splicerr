@@ -110,6 +110,7 @@ export type LocalWaveformResult = {
     bins: [number, number, number][]
     decodeMs: number
     analyzeMs: number
+    cacheHit: boolean
 }
 
 export async function localAudioWaveform(params: {

@@ -21,6 +21,29 @@
     let bins = $state<[number, number, number][]>([])
     let loadedPath = $state("")
 
+    function draw() {
+        if (!canvas || !bins.length) return
+        const context = canvas.getContext("2d")
+        if (!context) return
+        const { width, height } = canvas
+        context.clearRect(0, 0, width, height)
+        const columnWidth = width / bins.length
+        for (let index = 0; index < bins.length; index += 1) {
+            const [low, mid, high] = bins[index]
+            const peak = Math.max(low, mid, high)
+            if (!peak) continue
+            const scale = 255 / peak
+            const barHeight = Math.max(2, (peak / 255) * height)
+            context.fillStyle = `rgb(${Math.round(low * scale)}, ${Math.round(mid * scale)}, ${Math.round(high * scale)})`
+            context.fillRect(
+                index * columnWidth,
+                (height - barHeight) / 2,
+                Math.max(1, columnWidth - 1),
+                barHeight
+            )
+        }
+    }
+
     $effect(() => {
         if (!enabled || !relativeAudioPath || loadedPath === relativeAudioPath) return
         const requested = relativeAudioPath
@@ -44,26 +67,25 @@
     })
 
     $effect(() => {
-        if (!canvas || !bins.length) return
-        const context = canvas.getContext("2d")
-        if (!context) return
-        const { width, height } = canvas
-        context.clearRect(0, 0, width, height)
-        const columnWidth = width / bins.length
-        for (let index = 0; index < bins.length; index += 1) {
-            const [low, mid, high] = bins[index]
-            const peak = Math.max(low, mid, high)
-            if (!peak) continue
-            const scale = 255 / peak
-            const barHeight = Math.max(2, (peak / 255) * height)
-            context.fillStyle = `rgb(${Math.round(low * scale)}, ${Math.round(mid * scale)}, ${Math.round(high * scale)})`
-            context.fillRect(
-                index * columnWidth,
-                (height - barHeight) / 2,
-                Math.max(1, columnWidth - 1),
-                barHeight
-            )
+        bins
+        draw()
+    })
+
+    $effect(() => {
+        if (!canvas) return
+        const resize = () => {
+            const scale = window.devicePixelRatio || 1
+            const width = Math.max(1, Math.round(canvas.clientWidth * scale))
+            const height = Math.max(1, Math.round(canvas.clientHeight * scale))
+            if (canvas.width === width && canvas.height === height) return
+            canvas.width = width
+            canvas.height = height
+            draw()
         }
+        const observer = new ResizeObserver(resize)
+        observer.observe(canvas)
+        resize()
+        return () => observer.disconnect()
     })
 </script>
 
