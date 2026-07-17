@@ -1096,11 +1096,7 @@ mod search {
             // The dense tag rowid is a stable, indexed browse order for the
             // default local sort. Explicit column sorts keep their semantics.
             let expr = match params.sort.as_str() {
-                "pack_popularity" => if order == "ASC" {
-                    "COALESCE(s.pack_popularity_score, 9223372036854775807)"
-                } else {
-                    "COALESCE(s.pack_popularity_score, -1)"
-                },
+                "pack_popularity" => "s.pack_popularity_score",
                 "bpm" => "COALESCE(s.bpm, -1)",
                 "duration" => "s.duration_ms",
                 "key" => "COALESCE(s.key, '') COLLATE NOCASE",
@@ -1116,11 +1112,7 @@ mod search {
             )
         } else {
             let expr = match params.sort.as_str() {
-                "pack_popularity" => if order == "ASC" {
-                    "COALESCE(s.pack_popularity_score, 9223372036854775807)"
-                } else {
-                    "COALESCE(s.pack_popularity_score, -1)"
-                },
+                "pack_popularity" => "s.pack_popularity_score",
                 "bpm" => "COALESCE(s.bpm, -1)",
                 "duration" => "s.duration_ms",
                 "key" => "COALESCE(s.key, '') COLLATE NOCASE",

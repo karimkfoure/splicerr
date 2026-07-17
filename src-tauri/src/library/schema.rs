@@ -370,5 +370,16 @@ pub fn migrate(conn: &Connection) -> Result<(), String> {
         conn.execute("INSERT INTO schema_migrations (version) VALUES (11)", [])
             .map_err(|e| e.to_string())?;
     }
+    if !applied(12) {
+        conn.execute_batch(
+            "DROP INDEX IF EXISTS idx_library_popularity;
+             CREATE INDEX idx_library_popularity
+                 ON samples(pack_popularity_score DESC, uuid DESC)
+                 WHERE audio_cached_at > 0;",
+        )
+        .map_err(|e| e.to_string())?;
+        conn.execute("INSERT INTO schema_migrations (version) VALUES (12)", [])
+            .map_err(|e| e.to_string())?;
+    }
     Ok(())
 }
