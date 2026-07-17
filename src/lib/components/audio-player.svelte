@@ -164,7 +164,7 @@
                 </div>
             </div>
         {/if}
-        {#if bitrateKbps !== null}
+        {#if bitrateKbps != null}
             <div
                 class="shrink-0 text-xs tabular-nums text-muted-foreground"
                 title="Average MP3 bitrate"

@@ -2110,6 +2110,34 @@ mod tests {
         assert_eq!(combined.items[0]["uuid"], "sample-1");
         assert_eq!(combined.tag_summary[0].count, 2);
 
+        conn.execute(
+            "UPDATE samples SET bitrate_kbps = 192 WHERE uuid = 'sample-1'",
+            [],
+        )
+        .unwrap();
+        let with_bitrate = search::search(
+            &conn,
+            LibrarySearchParams {
+                query: Some("kick".into()),
+                tags: vec![],
+                page: 1,
+                limit: 1,
+                sort: "ingested_at".into(),
+                order: "DESC".into(),
+                favorites_only: true,
+                asset_category_slug: None,
+                key: None,
+                chord_type: None,
+                min_bpm: None,
+                max_bpm: None,
+                bpm: None,
+                pack_uuid: None,
+                samples_dir: dir.path().to_str().unwrap().into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(with_bitrate.items[0]["bitrate_kbps"], 192);
+
         let packs = search::list_packs(
             &conn,
             &LibraryListPacksParams {

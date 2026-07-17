@@ -70,10 +70,10 @@ After a headless mirror, materialize pack artwork and precompute average MP3 bit
 
 ```bash
 pnpm backfill:covers -- --samples-dir /Volumes/disco/splicerr
-pnpm backfill:bitrates -- --samples-dir /Volumes/disco/splicerr
+pnpm backfill:bitrates -- --samples-dir /Volumes/disco/splicerr --recalculate
 ```
 
-Both commands only process pending rows and are safe to restart. Add `--check` when an explicit full SQLite integrity check is desired before maintenance.
+Both commands are safe to restart. Bitrate recalculation reads the MPEG frame header and checkpoints each committed UUID batch, so it also handles samples whose remote duration is missing. Add `--check` when an explicit full SQLite integrity check is desired before maintenance.
 
 ### Headless backfill performance log
 
