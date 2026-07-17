@@ -55,6 +55,54 @@ export async function libraryMaterializeBatch(params: {
     return invoke<MaterializeBatchResult>("library_materialize_batch", params)
 }
 
+export type ExportSampleWavResult = {
+    absolutePath: string
+    relativePath: string
+    sampleRate: number
+    channels: number
+    sourceFrames: number
+    outputFrames: number
+    startTrimSamples: number
+    endTrimSamples: number
+    targetBeats: number | null
+    gridConfident: boolean
+    policyVersion: number
+    correctionEnabled: boolean
+}
+
+export async function exportSampleWav(params: {
+    samplesDir: string
+    relativeAudioPath: string
+    assetCategorySlug: string
+    durationMs: number
+    bpm?: number | null
+    correctionEnabled: boolean
+}) {
+    return invoke<ExportSampleWavResult>("export_sample_wav", {
+        params: {
+            samplesDir: params.samplesDir,
+            relativeAudioPath: params.relativeAudioPath,
+            assetCategorySlug: params.assetCategorySlug,
+            durationMs: params.durationMs,
+            bpm: params.bpm ?? null,
+            correctionEnabled: params.correctionEnabled,
+        },
+    })
+}
+
+export type FavoriteExportSummary = {
+    exported: number
+    alreadyExported: number
+    failed: number
+    failures: string[]
+}
+
+export async function exportMissingFavoriteWavs(samplesDir: string) {
+    return invoke<FavoriteExportSummary>("export_missing_favorite_wavs", {
+        samplesDir,
+    })
+}
+
 export type LibrarySampleFlags = {
     inLibrary: boolean
     favorite: boolean

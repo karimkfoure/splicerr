@@ -2,7 +2,7 @@ import { startDrag } from "@crabnebula/tauri-plugin-drag"
 import { join, appCacheDir } from "@tauri-apps/api/path"
 import { exists, create, mkdir, readFile } from "@tauri-apps/plugin-fs"
 import { savePackImage } from "./files.svelte"
-import { materializeSampleInLibrary } from "$lib/library/materialize"
+import { regenerateExportedSampleWav } from "$lib/library/export"
 import { setCachedInLibrary } from "$lib/library/session-cache.svelte"
 import { loading } from "./loading.svelte"
 import { isSamplesDirValid, settingsDialog } from "$lib/shared/config.svelte"
@@ -106,9 +106,9 @@ export async function handleSampleDownload(sampleAsset: SampleAsset) {
 
     try {
         loading.setCursor(true)
-        await materializeSampleInLibrary(sampleAsset)
-        await savePackImage(sampleAsset)
+        const result = await regenerateExportedSampleWav(sampleAsset)
         setCachedInLibrary(sampleAsset.uuid, true)
+        console.log("💾 Exported WAV at", result.absolutePath)
     } catch (e) {
         console.error("⚠️ Error downloading", e)
     } finally {
@@ -122,9 +122,23 @@ export async function handleSampleDrag(event: DragEvent, sampleAsset: SampleAsse
 
     try {
         loading.setCursor(true)
-        const { absolutePath: path } =
-            await materializeSampleInLibrary(sampleAsset)
+        const exportResult = await regenerateExportedSampleWav(sampleAsset)
+        const path = exportResult.absolutePath
         setCachedInLibrary(sampleAsset.uuid, true)
+
+        console.info("WAV drag export", {
+            uuid: sampleAsset.uuid,
+            name: sampleAsset.name,
+            correctionEnabled: exportResult.correctionEnabled,
+            sampleRate: exportResult.sampleRate,
+            sourceFrames: exportResult.sourceFrames,
+            outputFrames: exportResult.outputFrames,
+            startTrimSamples: exportResult.startTrimSamples,
+            endTrimSamples: exportResult.endTrimSamples,
+            targetBeats: exportResult.targetBeats,
+            gridConfident: exportResult.gridConfident,
+            path,
+        })
 
         // Save pack image to samples directory and use it as drag icon
         const pack = sampleAsset.parents.items[0] as PackAsset

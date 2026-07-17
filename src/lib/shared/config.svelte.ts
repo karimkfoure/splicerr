@@ -38,7 +38,7 @@ const DEFAULT_CONFIG = {
     samples_dir: null as string | null,
     ui_theme: "system" as UITheme,
     ui_scale: 1,
-    cut_mp3_delay: true,
+    wav_correction_enabled: true,
     repeat_audio: true,
     transpose: { ...DEFAULT_TRANSPOSE } as TransposeConfig,
 }
@@ -84,9 +84,15 @@ export async function loadConfig() {
             baseDir: BaseDirectory.AppConfig,
         })
         const parsed = JSON.parse(fileContent)
+        // Discard the upstream fixed-millisecond toggle. It is not part of the
+        // sample-based export policy and must not be written back to config.
+        const { cut_mp3_delay: _legacyMp3Delay, ...currentConfig } = parsed
         // Merge nested transpose separately so configs from older versions keep new defaults
-        const transpose = { ...DEFAULT_TRANSPOSE, ...(parsed.transpose ?? {}) }
-        Object.assign(config, parsed)
+        const transpose = {
+            ...DEFAULT_TRANSPOSE,
+            ...(currentConfig.transpose ?? {}),
+        }
+        Object.assign(config, currentConfig)
         config.transpose = transpose
         console.log("📂 Config loaded")
     }

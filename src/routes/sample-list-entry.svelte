@@ -24,7 +24,6 @@
         handleSampleDownload,
     } from "$lib/shared/drag.svelte"
     import Download from "lucide-svelte/icons/download"
-    import Check from "lucide-svelte/icons/check"
     import Star from "lucide-svelte/icons/star"
     import {
         getCachedInLibrary,
@@ -34,9 +33,7 @@
         setCachedInLibrary,
     } from "$lib/library/session-cache.svelte"
     import { librarySetFavorite } from "$lib/library/api"
-    import {
-        queueFavoriteMaterialization,
-    } from "$lib/shared/store.svelte"
+    import { regenerateExportedSampleWav } from "$lib/library/export"
     import { sampleRelativePath } from "$lib/shared/files.svelte"
     import { sampleDisplayFileName } from "$lib/shared/sample-path"
 
@@ -247,6 +244,10 @@
                         favoriting = true
                         try {
                             const next = !isFavorite
+                            if (next) {
+                                await regenerateExportedSampleWav(sampleAsset)
+                                setCachedInLibrary(sampleAsset.uuid, true)
+                            }
                             await librarySetFavorite(
                                 sampleAsset.uuid,
                                 next,
@@ -255,9 +256,6 @@
                             )
                             setCachedFavorite(sampleAsset.uuid, next)
                             sampleAsset.favorite = next
-                            if (next) {
-                                await queueFavoriteMaterialization(sampleAsset)
-                            }
                         } finally {
                             favoriting = false
                         }
@@ -280,7 +278,7 @@
                     variant="ghost"
                     class="flex-shrink-0 text-muted-foreground"
                     size="icon"
-                    disabled={downloading || inLibrary}
+                    disabled={downloading}
                     onclick={async (e) => {
                         e.stopPropagation()
                         downloading = true
@@ -294,15 +292,13 @@
                 >
                     {#if downloading}
                         <LoaderCircle class="animate-spin" />
-                    {:else if inLibrary}
-                        <Check />
                     {:else}
                         <Download />
                     {/if}
                 </Button>
             </Tooltip.Trigger>
             <Tooltip.Content
-                >{inLibrary ? "In library" : "Download"}</Tooltip.Content
+                >Export WAV</Tooltip.Content
             >
         </Tooltip.Root>
     </Tooltip.Provider>

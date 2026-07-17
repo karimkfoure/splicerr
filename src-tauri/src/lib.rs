@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
+pub mod audio_export;
 mod library;
 use library::LibraryState;
 use tokio::sync::{oneshot, Notify};
@@ -189,6 +190,8 @@ pub fn run() {
             splice_graphql,
             splice_response,
             splice_bridge_ready,
+            audio_export::export_sample_wav,
+            audio_export::export_missing_favorite_wavs,
             library::library_open,
             library::library_close,
             library::library_upsert_from_asset,

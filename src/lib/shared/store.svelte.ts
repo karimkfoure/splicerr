@@ -28,10 +28,7 @@ import {
 } from "$lib/library/api"
 import { mergeBatchFlags } from "$lib/library/session-cache.svelte"
 import { localizeSampleAsset } from "$lib/library/localize-asset"
-import {
-    materializeSampleInLibrary,
-    upsertSampleMetadataOnly,
-} from "$lib/library/materialize"
+import { materializeSampleInLibrary } from "$lib/library/materialize"
 import { mp3BlobUrl } from "$lib/shared/sample-bytes"
 import {
     readSampleMp3Bytes,
@@ -39,6 +36,10 @@ import {
     syncSampleLibraryFromDisk,
 } from "$lib/shared/files.svelte"
 import { config, isSamplesDirValid, settingsDialog } from "./config.svelte"
+import {
+    DEFAULT_MP3_START_TRIM_SAMPLES,
+    mp3StartTrimSeconds,
+} from "$lib/shared/mp3-padding"
 import {
     buildPackPopularityScopeKey,
     capturePackRankPage,
@@ -704,6 +705,7 @@ export class SamplesDirRequiredError extends Error {
 
 const descrambledPlaybackInflight = new Map<string, Promise<string>>()
 const diskPrefetchInflight = new Map<string, Promise<void>>()
+const playbackTrimSeconds = new Map<string, number>()
 
 /** Max in-memory descrambled MP3 blobs (~full file size each). */
 const MAX_DESCRAMBLED_BLOBS = 50
@@ -742,7 +744,8 @@ function trimDescrambledBlobCache(anchorUuid: string) {
 function registerDescrambledBlob(
     uuid: string,
     blobURL: string,
-    anchorUuid: string
+    anchorUuid: string,
+    bytes: Uint8Array
 ) {
     const existing = dataStore.descrambledSamples.get(uuid)
     if (
@@ -753,8 +756,13 @@ function registerDescrambledBlob(
         window.URL.revokeObjectURL(existing)
     }
     dataStore.descrambledSamples.set(uuid, blobURL)
+    playbackTrimSeconds.set(uuid, mp3StartTrimSeconds(bytes))
     touchDescrambledLru(uuid)
     trimDescrambledBlobCache(anchorUuid)
+}
+
+export function getPlaybackTrimSeconds(uuid: string): number {
+    return playbackTrimSeconds.get(uuid) ?? DEFAULT_MP3_START_TRIM_SAMPLES / 44_100
 }
 
 export function getCachedDescrambledPlaybackUrl(
@@ -791,7 +799,8 @@ function prefetchDescrambledFromDiskOnly(
         registerDescrambledBlob(
             sampleAsset.uuid,
             mp3BlobUrl(bytes),
-            anchorUuid
+            anchorUuid,
+            bytes
         )
     })().finally(() => {
         diskPrefetchInflight.delete(sampleAsset.uuid)
@@ -836,7 +845,8 @@ function loadDescrambledPlaybackUrl(
             registerDescrambledBlob(
                 sampleAsset.uuid,
                 blobURL,
-                sampleAsset.uuid
+                sampleAsset.uuid,
+                bytes
             )
             scheduleDeferredLibraryTouch(sampleAsset)
             return blobURL
@@ -855,7 +865,8 @@ function loadDescrambledPlaybackUrl(
             registerDescrambledBlob(
                 sampleAsset.uuid,
                 blobURL,
-                sampleAsset.uuid
+                sampleAsset.uuid,
+                result.bytes
             )
             return blobURL
         } finally {
@@ -945,6 +956,7 @@ export function freeDescrambledSample(uuid: string) {
     removeDescrambledLru(uuid)
     descrambledPlaybackInflight.delete(uuid)
     diskPrefetchInflight.delete(uuid)
+    playbackTrimSeconds.delete(uuid)
     if (existingBlobURL.startsWith("blob:")) {
         window.URL.revokeObjectURL(existingBlobURL)
     }
@@ -996,17 +1008,4 @@ export function clearTransposedCache() {
     }
     dataStore.transposedSamples.clear()
     console.info("🧹 Cleared transposed sample cache")
-}
-
-export async function queueFavoriteMaterialization(sampleAsset: SampleAsset) {
-    if (!isSamplesDirValid()) {
-        settingsDialog.open = true
-        return
-    }
-    await upsertSampleMetadataOnly(sampleAsset, true)
-    try {
-        await materializeSampleInLibrary(sampleAsset)
-    } catch (e) {
-        console.error("Favorite materialization failed", e)
-    }
 }

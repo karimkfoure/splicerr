@@ -36,7 +36,11 @@
         resetAssetList,
         switchBrowseMode,
     } from "$lib/shared/store.svelte"
-    import { isSamplesDirValid } from "$lib/shared/config.svelte"
+    import {
+        config,
+        isSamplesDirValid,
+        saveConfig,
+    } from "$lib/shared/config.svelte"
     import SettingsDialog from "$lib/components/settings-dialog.svelte"
     import * as Dialog from "$lib/components/ui/dialog"
     import KeySelect from "$lib/components/key-select.svelte"
@@ -52,6 +56,7 @@
     import { packSyncManager } from "$lib/shared/pack-sync.svelte"
     import { mirrorBackfillState } from "$lib/shared/mirror-backfill.svelte"
     import { toast } from "$lib/shared/toast.svelte"
+    import Switch from "$lib/components/ui/switch/switch.svelte"
 
     // TODO: Taxonomy comboboxes (maybe just pass all tags to each)
     // const instrumentTags = $derived(() =>
@@ -296,6 +301,24 @@
                     }}>Favorites only</Button
                 >
             {/if}
+            <div
+                class="ml-auto flex items-center gap-2 rounded-md border px-2.5 py-1"
+                title="Diagnostic control: disable to export the original decoded MP3 without trim or BPM-length correction"
+            >
+                <span class="text-xs font-medium">WAV correction</span>
+                <Switch
+                    aria-label="WAV correction"
+                    checked={config.wav_correction_enabled}
+                    onchange={() => {
+                        config.wav_correction_enabled =
+                            !config.wav_correction_enabled
+                        saveConfig()
+                    }}
+                />
+                <span class="w-5 text-xs text-muted-foreground">
+                    {config.wav_correction_enabled ? "On" : "Off"}
+                </span>
+            </div>
         </div>
         <div class="flex gap-4 justify-between items-center">
             <SettingsDialog />

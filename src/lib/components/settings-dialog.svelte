@@ -125,25 +125,6 @@
                 </div>
             </div>
             <div class="flex flex-col gap-2">
-                <Label for="mp3DelayToggle">MP3 Delay Correction</Label>
-                <p class="text-muted-foreground text-sm">
-                    Cut 12ms from the start of MP3 files to correct for encoder delay.
-                </p>
-                <div class="flex items-center gap-2">
-                    <Switch
-                        id="mp3DelayToggle"
-                        bind:checked={config.cut_mp3_delay}
-                        onchange={() => {
-                            config.cut_mp3_delay = !config.cut_mp3_delay
-                            saveConfig()
-                        }}
-                    />
-                    <Label for="mp3DelayToggle" class="cursor-pointer">
-                        {config.cut_mp3_delay ? "Enabled" : "Disabled"}
-                    </Label>
-                </div>
-            </div>
-            <div class="flex flex-col gap-2">
                 <Label for="repeatAudioToggle">Repeat Audio</Label>
                 <p class="text-muted-foreground text-sm">
                     When enabled, audio will repeat after finishing.

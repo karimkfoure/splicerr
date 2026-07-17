@@ -33,6 +33,7 @@ https://github.com/user-attachments/assets/34f1ba90-c881-4a04-a5df-c147bdb51c2c
 
 - Drag-and-drop samples
 - **Local library mirror** (preview saves MP3 + metadata; offline browse via **My library**) ✨ _new in this fork_
+- **Permanent Ableton-ready WAV exports** — drag, Export WAV, and favoriting regenerate a 24-bit WAV under `samples_dir/exported/` with the original pack/folder structure. MP3 encoder padding is removed; confidently gridded loops are written at an exact BPM-derived frame length.
 - **Resumable local mirror backfill** by sample pack, with pause/resume and retry for failed packs ✨ _new in this fork_
 - **Favorites** stored locally with filter in library mode ✨ _new in this fork_
 - **Transpose by key or pitch (tempo-preserving)** ✨ _new in this fork_

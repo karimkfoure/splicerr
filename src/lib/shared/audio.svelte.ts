@@ -5,6 +5,7 @@ import {
     freeDescrambledSample,
     getCachedDescrambledPlaybackUrl,
     getPlaybackSampleURL,
+    getPlaybackTrimSeconds,
     prefetchNeighborPlaybackUrls,
     prefetchPlaybackUrl,
     SamplesDirRequiredError,
@@ -56,7 +57,7 @@ export const globalAudio = $state({
         }
     },
     applyPlaybackSrc(sampleAsset: SampleAsset, src: string, from: number = 0) {
-        const delay = config.cut_mp3_delay ? 0.012 : 0
+        const delay = getPlaybackTrimSeconds(sampleAsset.uuid)
         const start = from > 0 ? from : delay
         const assetUuid = sampleAsset.uuid
 
