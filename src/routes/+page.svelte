@@ -16,6 +16,7 @@
     import ProgressLoading from "$lib/components/progress-loading.svelte"
     import Separator from "$lib/components/ui/separator/separator.svelte"
     import SortHeader from "$lib/components/sort-header.svelte"
+    import { SAMPLE_LIST_GRID } from "$lib/shared/sample-list-layout"
     import ChevronDown from "lucide-svelte/icons/chevron-down"
     import { cn } from "$lib/utils"
     import AssetCategorySelect from "$lib/components/asset-category-select.svelte"
@@ -559,7 +560,8 @@
         <div class="flex flex-col gap-2">
             <Separator />
             <div
-                class="flex gap-2 items-center justify-between overflow-clip px-2"
+                class="grid gap-2 items-center overflow-clip px-2"
+                style:grid-template-columns={SAMPLE_LIST_GRID}
             >
                 {#if browseStore.mode === "library"}
                     <SortHeader
@@ -568,17 +570,17 @@
                         sort={queryStore.sort}
                         order={queryStore.order}
                         onsort={updateSort}
-                        class="min-w-[8.5rem] w-44 flex-shrink-0"
+                        class="min-w-0"
                     />
                 {:else}
                     <div
-                        class="min-w-[8.5rem] w-44 flex-shrink-0 text-xs text-muted-foreground"
+                        class="min-w-0 text-xs text-muted-foreground"
                     >
                         Pack
                     </div>
                 {/if}
                 <div
-                    class="w-12 flex-shrink-0 text-xs text-muted-foreground"
+                    class="min-w-0 text-xs text-muted-foreground"
                 ></div>
                 <SortHeader
                     value="name"
@@ -586,16 +588,16 @@
                     sort={queryStore.sort}
                     order={queryStore.order}
                     onsort={updateSort}
-                    class="min-w-32 w-96 flex-[3_1_auto]"
+                    class="min-w-0"
                 />
-                <div class="min-w-32 w-[150px] flex-grow md:block hidden"></div>
+                <div class="min-w-0 md:block hidden"></div>
                 <SortHeader
                     value="duration"
                     label="Time"
                     sort={queryStore.sort}
                     order={queryStore.order}
                     onsort={updateSort}
-                    class="flex-shrink-0 w-14 flex-grow"
+                    class="min-w-0"
                 />
                 <SortHeader
                     value="key"
@@ -603,7 +605,7 @@
                     sort={queryStore.sort}
                     order={queryStore.order}
                     onsort={updateSort}
-                    class="flex-shrink-0 w-14 flex-grow"
+                    class="min-w-0"
                 />
                 <SortHeader
                     value="bpm"
@@ -611,8 +613,10 @@
                     sort={queryStore.sort}
                     order={queryStore.order}
                     onsort={updateSort}
-                    class="flex-shrink-0 w-14 flex-grow"
+                    class="min-w-0"
                 />
+                <div></div>
+                <div></div>
             </div>
             <ProgressLoading
                 loading={(loading.assets &&

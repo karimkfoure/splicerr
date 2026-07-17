@@ -36,6 +36,7 @@
     import { regenerateExportedSampleWav } from "$lib/library/export"
     import { sampleRelativePath } from "$lib/shared/files.svelte"
     import { sampleDisplayFileName } from "$lib/shared/sample-path"
+    import { SAMPLE_LIST_GRID } from "$lib/shared/sample-list-layout"
 
     let {
         class: className,
@@ -100,7 +101,7 @@
 
 <button
     class={cn(
-        "flex gap-4 items-center justify-between p-1 rounded-lg focus:outline-none cursor-grab",
+        "grid gap-2 items-center p-1 rounded-lg focus:outline-none cursor-grab",
         selected && "bg-muted",
         className
     )}
@@ -109,9 +110,10 @@
     tabindex="-1"
     onmousedown={() => globalAudio.selectSampleAsset(sampleAsset, false)}
     ondragstart={(event) => handleSampleDrag(event, sampleAsset)}
+    style:grid-template-columns={SAMPLE_LIST_GRID}
 >
     <div
-        class="flex items-center gap-2 min-w-[8.5rem] w-44 flex-shrink-0"
+        class="flex min-w-0 items-center gap-2"
     >
         <PackPreview {pack} />
         <div class="flex min-h-12 min-w-0 flex-1 items-center">
@@ -169,7 +171,7 @@
             {/if}
         {/if}
     </Button>
-    <div class="min-w-32 w-96 flex-[3_1_auto] overflow-clip">
+    <div class="min-w-0 overflow-clip">
         <div
             class={cn(
                 "text-left relative after:content-[''] after:absolute after:inset-y-0 after:right-0 after:w-4 after:bg-gradient-to-r after:from-transparent after:pointer-events-none",
@@ -219,19 +221,20 @@
             const startTime = progress * (sampleAsset.duration / 1000)
             globalAudio.playSampleAsset(sampleAsset, startTime)
         }}
-        class="min-w-32 w-[150px] h-12 flex-grow md:block hidden"
+        class="min-w-0 h-12 md:block hidden"
     />
-    <div class="text-muted-foreground flex-shrink-0 w-14 flex-grow">
+    <div class="text-muted-foreground min-w-0">
         {millisToMinutesAndSeconds(sampleAsset.duration)}
     </div>
-    <div class="text-muted-foreground flex-shrink-0 w-14 flex-grow">
+    <div class="text-muted-foreground min-w-0">
         {(sampleAsset.key &&
             formatKey(sampleAsset.key, sampleAsset.chord_type)) ??
             "--"}
     </div>
-    <div class="text-muted-foreground flex-shrink-0 w-14 flex-grow">
+    <div class="text-muted-foreground min-w-0">
         {sampleAsset.bpm ?? "--"}
     </div>
+    <div class="flex justify-center">
     <Tooltip.Provider>
         <Tooltip.Root>
             <Tooltip.Trigger>
@@ -272,6 +275,8 @@
             <Tooltip.Content>Favorite</Tooltip.Content>
         </Tooltip.Root>
     </Tooltip.Provider>
+    </div>
+    <div class="flex justify-center">
     <Tooltip.Provider>
         <Tooltip.Root>
             <Tooltip.Trigger>
@@ -302,6 +307,7 @@
             >
         </Tooltip.Root>
     </Tooltip.Provider>
+    </div>
 </button>
 
 <style>
