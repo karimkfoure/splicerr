@@ -381,5 +381,27 @@ pub fn migrate(conn: &Connection) -> Result<(), String> {
         conn.execute("INSERT INTO schema_migrations (version) VALUES (12)", [])
             .map_err(|e| e.to_string())?;
     }
+    if !applied(13) {
+        conn.execute_batch(
+            "ALTER TABLE packs ADD COLUMN popularity_rank INTEGER;
+             ALTER TABLE packs ADD COLUMN popularity_observed_at INTEGER;
+             CREATE INDEX idx_packs_popularity_rank
+                 ON packs(popularity_rank, uuid);
+             CREATE TABLE IF NOT EXISTS pack_popularity_backfill_checkpoint (
+                 id INTEGER PRIMARY KEY CHECK (id=1),
+                 next_page INTEGER NOT NULL,
+                 listed_count INTEGER NOT NULL,
+                 remote_records INTEGER,
+                 reported_pages INTEGER,
+                 last_fingerprint TEXT,
+                 done INTEGER NOT NULL,
+                 stop_reason TEXT,
+                 updated_at INTEGER NOT NULL
+             );",
+        )
+        .map_err(|e| e.to_string())?;
+        conn.execute("INSERT INTO schema_migrations (version) VALUES (13)", [])
+            .map_err(|e| e.to_string())?;
+    }
     Ok(())
 }
