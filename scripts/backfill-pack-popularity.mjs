@@ -5,8 +5,8 @@ import path from "node:path"
 import { chromium } from "playwright"
 
 const GRAPHQL_URL = "https://surfaces-graphql.splice.com/graphql"
-const PAGE_SIZE = 150
-const PACKS_QUERY = `query PacksSearch($page: Int, $limit: Int = 150) {
+const PAGE_SIZE = 100
+const PACKS_QUERY = `query PacksSearch($page: Int, $limit: Int = 100) {
   assetsSearch(
     filter: {legacy: true, published: true, asset_type_slug: pack}
     pagination: {page: $page, limit: $limit}
@@ -83,7 +83,7 @@ function persistPage(checkpoint, result, fingerprint) {
     const currentPage = Number(result.pagination_metadata?.currentPage ?? checkpoint.nextPage)
     const observedAt = Date.now()
     const updates = (result.items ?? []).map((pack, index) => {
-        const rank = (currentPage - 1) * PAGE_SIZE + index + 1
+        const rank = checkpoint.listed + index + 1
         return `UPDATE packs
 SET popularity_rank=${rank}, popularity_observed_at=${observedAt}
 WHERE uuid=${sql(pack.uuid)};`
