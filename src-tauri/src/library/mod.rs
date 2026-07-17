@@ -1046,6 +1046,7 @@ mod search {
             .query
             .as_deref()
             .is_some_and(|query| !query.trim().is_empty());
+        let pack_popularity_sort = params.sort == "pack_popularity" && !has_query;
         let tag_driver = if !has_query && params.pack_uuid.is_none() {
             params
                 .tags
@@ -1065,7 +1066,7 @@ mod search {
             None
         };
         let mut filter_params = params.clone();
-        if tag_driver.is_some() {
+        if tag_driver.is_some() || pack_popularity_sort {
             filter_params.tags.clear();
         }
         let (where_sql, mut where_params) = build_filter(&filter_params, !has_query, None)?;
@@ -1080,10 +1081,19 @@ mod search {
             None
         };
 
-        let order = if params.order.eq_ignore_ascii_case("ASC") {
+        let requested_order = if params.order.eq_ignore_ascii_case("ASC") {
             "ASC"
         } else {
             "DESC"
+        };
+        let order = if pack_popularity_sort {
+            if requested_order == "DESC" {
+                "ASC"
+            } else {
+                "DESC"
+            }
+        } else {
+            requested_order
         };
         let fetch_limit = params.limit.max(1) + 1;
         let cursor: Option<serde_json::Value> = params
@@ -1093,12 +1103,20 @@ mod search {
             .transpose()
             .map_err(|e| format!("invalid library cursor: {e}"))?;
         let cursor_value = cursor.as_ref().and_then(|c| c.get("value"));
-        let cursor_uuid = cursor
-            .as_ref()
-            .and_then(|c| c.get("uuid"))
-            .and_then(|v| v.as_str());
+        let cursor_tie = cursor.as_ref().and_then(|c| c.get("tie"));
 
-        let (source_sql, source_filter, cursor_expr, sort_expr) = if has_query {
+        let (source_sql, source_filter, cursor_expr, sort_expr, tie_expr) = if pack_popularity_sort
+        {
+            let (source, source_filter, tag_values) = pack_popularity_source(&params.tags);
+            where_params.splice(0..0, tag_values);
+            (
+                source,
+                source_filter,
+                "p.popularity_rank".to_string(),
+                "p.popularity_rank".to_string(),
+                "s.rowid".to_string(),
+            )
+        } else if has_query {
             let fts_query = params
                 .query
                 .as_deref()
@@ -1114,6 +1132,7 @@ mod search {
                 "f.samples_fts MATCH ? AND".to_string(),
                 "f.rowid".to_string(),
                 "f.rowid".to_string(),
+                "s.uuid".to_string(),
             )
         } else if let Some(tag_driver) = tag_driver {
             let (source, source_filter, tag_values) = tag_driven_source(&params.tags, &tag_driver);
@@ -1129,7 +1148,13 @@ mod search {
                 "name" => "s.name COLLATE NOCASE",
                 _ => "driver.sample_uuid COLLATE BINARY",
             };
-            (source, source_filter, expr.to_string(), expr.to_string())
+            (
+                source,
+                source_filter,
+                expr.to_string(),
+                expr.to_string(),
+                "s.uuid".to_string(),
+            )
         } else {
             let expr = match params.sort.as_str() {
                 "pack_popularity" => "s.pack_popularity_score",
@@ -1154,38 +1179,50 @@ mod search {
             } else {
                 "samples s".to_string()
             };
-            (source, String::new(), expr.to_string(), expr.to_string())
+            (
+                source,
+                String::new(),
+                expr.to_string(),
+                expr.to_string(),
+                "s.uuid".to_string(),
+            )
         };
 
         let mut seek_sql = String::new();
-        if let (Some(value), Some(uuid)) = (cursor_value, cursor_uuid) {
+        if let (Some(value), Some(tie)) = (cursor_value, cursor_tie) {
             let op = if order == "ASC" { ">" } else { "<" };
-            seek_sql = format!(" AND (({cursor_expr}), s.uuid) {op} (?, ?)");
-            let value = json_to_sql_value(value)?;
-            where_params.push(value);
-            where_params.push(uuid.to_string().into());
+            seek_sql = format!(" AND (({cursor_expr}), ({tie_expr})) {op} (?, ?)");
+            where_params.push(json_to_sql_value(value)?);
+            where_params.push(json_to_sql_value(tie)?);
         }
 
         let sql = format!(
-            "SELECT s.uuid, {cursor_expr} FROM {source_sql}
+            "SELECT s.uuid, {cursor_expr}, {tie_expr} FROM {source_sql}
              WHERE {source_filter} {where_sql}{seek_sql}
-             ORDER BY {sort_expr} {order}, s.uuid {order} LIMIT {fetch_limit}"
+             ORDER BY {sort_expr} {order}, {tie_expr} {order} LIMIT {fetch_limit}"
         );
 
         let candidates_started_at = std::time::Instant::now();
-        let mut candidates: Vec<(String, Value)> =
-            query_rows(conn, &sql, &where_params, |r| Ok((r.get(0)?, r.get(1)?)))?;
+        let mut candidates: Vec<(String, Value, Value)> =
+            query_rows(conn, &sql, &where_params, |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })?;
         let candidates_ms = candidates_started_at.elapsed().as_millis();
         let has_more = candidates.len() > params.limit.max(1) as usize;
         if has_more {
             candidates.pop();
         }
-        let next_cursor = candidates.last().map(|(uuid, value)| {
-            serde_json::json!({ "value": sql_value_to_json(value), "uuid": uuid }).to_string()
+        let next_cursor = candidates.last().map(|(uuid, value, tie)| {
+            serde_json::json!({
+                "value": sql_value_to_json(value),
+                "tie": sql_value_to_json(tie),
+                "uuid": uuid
+            })
+            .to_string()
         });
         let uuids = candidates
             .into_iter()
-            .map(|(uuid, _)| uuid)
+            .map(|(uuid, _, _)| uuid)
             .collect::<Vec<_>>();
 
         let hydrate_started_at = std::time::Instant::now();
@@ -1336,6 +1373,25 @@ mod search {
         }
         source.push_str(" JOIN samples s ON s.uuid = driver.sample_uuid");
         (source, format!("{} AND", filters.join(" AND ")), values)
+    }
+
+    fn pack_popularity_source(tags: &[String]) -> (String, String, Vec<Value>) {
+        let mut source = "packs p INDEXED BY idx_packs_popularity_rank JOIN samples s INDEXED BY idx_library_cached_pack ON s.pack_uuid = p.uuid".to_string();
+        let mut filters = vec!["p.popularity_rank IS NOT NULL".to_string()];
+        let mut values = Vec::new();
+        for (index, tag) in tags.iter().enumerate() {
+            source.push_str(&format!(
+                " JOIN sample_tags tag_{index} INDEXED BY idx_sample_tags_tag_sample ON tag_{index}.sample_uuid = s.uuid"
+            ));
+            filters.push(format!("tag_{index}.tag_uuid = ?"));
+            values.push(tag.clone().into());
+        }
+        let source_filter = if filters.is_empty() {
+            String::new()
+        } else {
+            format!("{} AND", filters.join(" AND "))
+        };
+        (source, source_filter, values)
     }
 
     fn json_to_sql_value(value: &serde_json::Value) -> Result<Value, String> {

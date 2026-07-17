@@ -403,5 +403,14 @@ pub fn migrate(conn: &Connection) -> Result<(), String> {
         conn.execute("INSERT INTO schema_migrations (version) VALUES (13)", [])
             .map_err(|e| e.to_string())?;
     }
+    if !applied(14) {
+        conn.execute_batch(
+            "CREATE INDEX idx_packs_popularity_browse
+                 ON packs(COALESCE(popularity_rank, 2147483647), uuid);",
+        )
+        .map_err(|e| e.to_string())?;
+        conn.execute("INSERT INTO schema_migrations (version) VALUES (14)", [])
+            .map_err(|e| e.to_string())?;
+    }
     Ok(())
 }
