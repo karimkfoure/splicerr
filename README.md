@@ -68,6 +68,14 @@ Random-stream seeds and cursors are checkpointed in SQLite after every committed
 
 Transient GraphQL throttling and Cloudflare `5xx` responses retry with short exponential backoff, which prevents late-pass listing work from being discarded by a single gateway error.
 
+Build the offline **Pack popularity** ranking after mirroring audio:
+
+```bash
+pnpm backfill:popularity -- --samples-dir /Volumes/disco/splicerr
+```
+
+This command downloads no audio. It traverses remote samples by popularity, assigns each local pack the rank of its first observed sample, checkpoints every 25 pages, and resumes automatically. Use `--restart` only to deliberately replace the completed snapshot with a fresh catalog pass.
+
 After a headless mirror, materialize pack artwork and precompute average MP3 bitrate for fully offline browsing:
 
 ```bash

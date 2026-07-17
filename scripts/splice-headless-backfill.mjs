@@ -16,6 +16,7 @@ const PACK_PAGE_SIZE = 50
 const DOWNLOAD_TIMEOUT_MS = 3000
 const DOWNLOAD_RETRY_TIMEOUT_MS = 1500
 const DOWNLOAD_MAX_ATTEMPTS = 2
+const POPULARITY_CHECKPOINT_PAGES = 25
 
 const args = parseArgs(process.argv.slice(2))
 const samplesDir = args.samplesDir ?? DEFAULT_SAMPLES_DIR
@@ -27,6 +28,7 @@ const maxBatches = args.maxBatches == null ? Infinity : Number(args.maxBatches)
 const maxPacks = args.maxPacks == null ? Infinity : Number(args.maxPacks)
 const mode = args.mode ?? "random"
 const randomSeed = String(args.seed ?? Math.floor(Math.random() * Number.MAX_SAFE_INTEGER))
+const dryRun = args.dryRun === true
 
 if (!existsSync(samplesDir)) {
     die(`Samples dir does not exist: ${samplesDir}`)
@@ -215,6 +217,14 @@ CREATE TABLE IF NOT EXISTS random_backfill_checkpoint (
   stream_count INTEGER NOT NULL,
   seed TEXT NOT NULL,
   cursor TEXT,
+  done INTEGER NOT NULL DEFAULT 0,
+  updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS popularity_backfill_checkpoint (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  cursor TEXT,
+  listed_count INTEGER NOT NULL DEFAULT 0,
+  page_count INTEGER NOT NULL DEFAULT 0,
   done INTEGER NOT NULL DEFAULT 0,
   updated_at INTEGER NOT NULL
 );
@@ -975,6 +985,139 @@ const PacksSearch = {
 }`,
 }
 
+const POPULARITY_SCOPE = "samples|sort:popularity"
+
+function loadPopularityCheckpoint() {
+    const row = sqliteRows(`
+SELECT cursor, listed_count, page_count, done
+FROM popularity_backfill_checkpoint WHERE id=1;`)[0]
+    return row ? {
+        cursor: row[0] || null,
+        listed: Number(row[1]),
+        pages: Number(row[2]),
+        done: row[3] === "1",
+    } : null
+}
+
+function startPopularityPass() {
+    sqliteExec(`BEGIN;
+DELETE FROM pack_popularity_scores WHERE scope_key=${sqlValue(POPULARITY_SCOPE)};
+UPDATE samples SET pack_popularity_score=NULL
+WHERE audio_cached_at > 0 AND pack_popularity_score IS NOT NULL;
+INSERT INTO popularity_backfill_checkpoint (id, cursor, listed_count, page_count, done, updated_at)
+VALUES (1, NULL, 0, 0, 0, ${now()})
+ON CONFLICT(id) DO UPDATE SET
+  cursor=NULL, listed_count=0, page_count=0, done=0, updated_at=excluded.updated_at;
+COMMIT;`)
+    return { cursor: null, listed: 0, pages: 0, done: false }
+}
+
+function persistPopularityPage(checkpoint, packs) {
+    const statements = packs.map(({ uuid, name, rank }) => `
+INSERT INTO packs (uuid, name) VALUES (${sqlValue(uuid)}, ${sqlValue(name)})
+ON CONFLICT(uuid) DO UPDATE SET name=excluded.name;
+INSERT INTO pack_popularity_scores
+  (pack_uuid, scope_key, score, best_rank, observation_count, updated_at)
+VALUES
+  (${sqlValue(uuid)}, ${sqlValue(POPULARITY_SCOPE)}, ${1 / rank}, ${rank}, 1, ${now()})
+ON CONFLICT(pack_uuid, scope_key) DO NOTHING;
+UPDATE samples SET pack_popularity_score=${1 / rank}
+WHERE pack_uuid=${sqlValue(uuid)} AND audio_cached_at > 0;
+`)
+    sqliteExec(`BEGIN;
+${statements.join("\n")}
+INSERT INTO popularity_backfill_checkpoint (id, cursor, listed_count, page_count, done, updated_at)
+VALUES (1, ${sqlValue(checkpoint.cursor)}, ${checkpoint.listed}, ${checkpoint.pages}, ${checkpoint.done ? 1 : 0}, ${now()})
+ON CONFLICT(id) DO UPDATE SET
+  cursor=excluded.cursor,
+  listed_count=excluded.listed_count,
+  page_count=excluded.page_count,
+  done=excluded.done,
+  updated_at=excluded.updated_at;
+COMMIT;`)
+}
+
+async function runPopularityBackfill(page) {
+    let checkpoint = dryRun ? { cursor: null, listed: 0, pages: 0, done: false } : loadPopularityCheckpoint()
+    if (checkpoint?.done && args.restart !== true) {
+        log(`popularity snapshot already complete listed=${checkpoint.listed} pages=${checkpoint.pages}; use --restart for a fresh pass`)
+        return
+    }
+    if (!checkpoint || args.restart === true) {
+        checkpoint = dryRun ? { cursor: null, listed: 0, pages: 0, done: false } : startPopularityPass()
+    }
+    const knownPacks = new Set(dryRun ? [] : sqliteRows(`
+SELECT pack_uuid FROM pack_popularity_scores
+WHERE scope_key=${sqlValue(POPULARITY_SCOPE)};`).map((row) => row[0]))
+    const localPacks = new Set(sqliteRows("SELECT pack_uuid FROM library_pack_counts;").map((row) => row[0]))
+    let matchedPacks = [...knownPacks].filter((uuid) => localPacks.has(uuid)).length
+    log(`popularity mode checkpoint=${checkpoint.listed ? "resumed" : "fresh"} listed=${checkpoint.listed} packs=${matchedPacks}/${localPacks.size} dryRun=${dryRun}`)
+
+    let sessionPages = 0
+    let pendingPacks = []
+    while (!checkpoint.done && matchedPacks < localPacks.size && sessionPages < maxBatches) {
+        const json = await queryGraphql(page, {
+            ...SamplesSearchCursor,
+            variables: {
+                parent_asset_uuid: null,
+                parent_asset_type: null,
+                cursor: checkpoint.cursor,
+                limit: samplePageSize,
+                sort: "popularity",
+                order: "DESC",
+                random_seed: null,
+            },
+        })
+        const result = json?.data?.assetsSearch
+        if (!result) {
+            const graphqlError = (json?.errors ?? []).map((error) => error.message).join("; ")
+            const staleCursor = checkpoint.cursor && /cursor|pagination|invalid/i.test(graphqlError)
+            if (!dryRun && staleCursor) {
+                log(`popularity cursor rejected; restarting snapshot: ${graphqlError}`)
+                checkpoint = startPopularityPass()
+                knownPacks.clear()
+                matchedPacks = 0
+                pendingPacks = []
+                continue
+            }
+            throw new Error(graphqlError || "missing assetsSearch")
+        }
+        const items = result.items ?? []
+        const newPacks = []
+        items.forEach((item, index) => {
+            const pack = item.parents?.items?.[0]
+            if (!pack?.uuid || !localPacks.has(pack.uuid) || knownPacks.has(pack.uuid)) return
+            knownPacks.add(pack.uuid)
+            newPacks.push({
+                uuid: pack.uuid,
+                name: pack.name || "Unknown pack",
+                rank: checkpoint.listed + index + 1,
+            })
+        })
+        matchedPacks += newPacks.length
+        pendingPacks.push(...newPacks)
+        const next = result.response_metadata?.next ?? null
+        checkpoint = {
+            cursor: next,
+            listed: checkpoint.listed + items.length,
+            pages: checkpoint.pages + 1,
+            done: !next || items.length === 0,
+        }
+        sessionPages++
+        const shouldFlush = checkpoint.done || matchedPacks === localPacks.size ||
+            sessionPages === maxBatches || sessionPages % POPULARITY_CHECKPOINT_PAGES === 0
+        if (shouldFlush) {
+            if (!dryRun) persistPopularityPage(checkpoint, pendingPacks)
+            log(`popularity page=${checkpoint.pages} listed=${checkpoint.listed} newPacks=${pendingPacks.length} packs=${matchedPacks}/${localPacks.size} next=${checkpoint.done ? "no" : "yes"}`)
+            pendingPacks = []
+        }
+    }
+    if (matchedPacks === localPacks.size && !dryRun) {
+        checkpoint.done = true
+        persistPopularityPage(checkpoint, [])
+    }
+}
+
 async function catalogSomePacks(page, jobId) {
     const totalPacks = Number(sqliteRows(`SELECT total_packs FROM mirror_jobs WHERE id=${jobId};`)[0]?.[0] ?? 0)
     const nextPage = Math.floor(totalPacks / PACK_PAGE_SIZE) + 1
@@ -1228,10 +1371,12 @@ async function main() {
     log(`sqlite binary ${sqliteBin}`)
     assertDatabaseIntegrity()
     ensureMirrorTables()
-    const { browser, pages } = await setupGraphqlPages(mode === "packs" ? 1 : 10)
+    const { browser, pages } = await setupGraphqlPages(mode === "random" ? 10 : 1)
     const page = pages[0]
     try {
-        if (mode === "packs") {
+        if (mode === "popularity") {
+            await runPopularityBackfill(page)
+        } else if (mode === "packs") {
             const jobId = getJobId()
             refreshQueuedProgress(jobId)
             summarize(jobId)

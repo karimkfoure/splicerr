@@ -9,6 +9,7 @@
     "preview": "vite preview",
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
     "backfill:headless": "node scripts/splice-headless-backfill.mjs",
+    "backfill:popularity": "node scripts/splice-headless-backfill.mjs --mode popularity",
     "analyze:mp3-padding": "node scripts/analyze-mp3-padding.mjs",
     "analyze:waveform-alignment": "node scripts/analyze-waveform-alignment.mjs",
     "fixtures:ableton-trim": "node scripts/generate-ableton-trim-fixtures.mjs",
