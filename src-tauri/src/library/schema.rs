@@ -360,5 +360,15 @@ pub fn migrate(conn: &Connection) -> Result<(), String> {
         conn.execute("INSERT INTO schema_migrations (version) VALUES (10)", [])
             .map_err(|e| e.to_string())?;
     }
+    if !applied(11) {
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_sample_tags_tag_sample
+                 ON sample_tags(tag_uuid, sample_uuid);
+             DROP INDEX IF EXISTS idx_sample_tags_tag;",
+        )
+        .map_err(|e| e.to_string())?;
+        conn.execute("INSERT INTO schema_migrations (version) VALUES (11)", [])
+            .map_err(|e| e.to_string())?;
+    }
     Ok(())
 }

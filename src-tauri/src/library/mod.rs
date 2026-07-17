@@ -1106,10 +1106,10 @@ mod search {
                 "key" => "COALESCE(s.key, '') COLLATE NOCASE",
                 "pack_name" => "s.pack_name COLLATE NOCASE",
                 "name" => "s.name COLLATE NOCASE",
-                _ => "driver.rowid",
+                _ => "driver.sample_uuid COLLATE BINARY",
             };
             (
-                "sample_tags driver INDEXED BY idx_sample_tags_tag JOIN samples s ON s.uuid = driver.sample_uuid".to_string(),
+                "sample_tags driver INDEXED BY idx_sample_tags_tag_sample JOIN samples s ON s.uuid = driver.sample_uuid".to_string(),
                 "driver.tag_uuid = ? AND".to_string(),
                 expr.to_string(),
                 expr.to_string(),
@@ -1254,7 +1254,7 @@ mod search {
         } else if let Some(driver) = tag_driver {
             values.insert(0, driver.into());
             (
-                "sample_tags driver INDEXED BY idx_sample_tags_tag JOIN samples s ON s.uuid = driver.sample_uuid",
+                "sample_tags driver INDEXED BY idx_sample_tags_tag_sample JOIN samples s ON s.uuid = driver.sample_uuid",
                 "driver.tag_uuid = ? AND",
             )
         } else {
