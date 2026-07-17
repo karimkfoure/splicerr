@@ -189,26 +189,24 @@
     onMount(() => {
         const onOnline = () => (online = true)
         const onOffline = () => (online = false)
-        window.addEventListener("online", onOnline)
-        window.addEventListener("offline", onOffline)
-
-        viewportRef.addEventListener("scroll", () => {
+        const onViewportScroll = () => {
             if (loading.assets) return
-            const atBottom =
+            const preloadDistance =
+                browseStore.mode === "library"
+                    ? viewportRef.clientHeight * 3
+                    : viewportRef.clientHeight
+            const nearBottom =
                 viewportRef.scrollTop + viewportRef.clientHeight >=
-                viewportRef.scrollHeight - viewportRef.clientHeight
-            if (!atBottom) return
-
-            if (
-                browseStore.mode === "library" &&
-                !dataStore.has_more
-            ) {
-                return
-            }
+                viewportRef.scrollHeight - preloadDistance
+            if (!nearBottom || !dataStore.has_more) return
 
             queryStore.page += 1
-            console.log("📃 End of list reached, loading more assets")
             fetchAssets()
+        }
+        window.addEventListener("online", onOnline)
+        window.addEventListener("offline", onOffline)
+        viewportRef.addEventListener("scroll", onViewportScroll, {
+            passive: true,
         })
 
         searchInputRef.focus()
@@ -218,6 +216,7 @@
         return () => {
             window.removeEventListener("online", onOnline)
             window.removeEventListener("offline", onOffline)
+            viewportRef.removeEventListener("scroll", onViewportScroll)
         }
     })
 </script>
@@ -543,7 +542,9 @@
                 />
             </div>
             <ProgressLoading
-                loading={loading.assets || loading.waveformsCount > 0}
+                loading={loading.assets ||
+                    (browseStore.mode === "splice" &&
+                        loading.waveformsCount > 0)}
             />
         </div>
     </div>

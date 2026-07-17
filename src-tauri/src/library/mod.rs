@@ -6,18 +6,21 @@ use schema::migrate;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::State;
 use tokio::sync::Semaphore;
 
 pub struct LibraryState {
     conn: Arc<Mutex<Option<Connection>>>,
+    search_generation: Arc<AtomicU64>,
 }
 
 impl Default for LibraryState {
     fn default() -> Self {
         Self {
             conn: Arc::new(Mutex::new(None)),
+            search_generation: Arc::new(AtomicU64::new(0)),
         }
     }
 }
@@ -730,11 +733,21 @@ pub struct TagSummaryEntry {
 
 #[tauri::command]
 pub async fn library_search(
-    _state: State<'_, LibraryState>,
+    state: State<'_, LibraryState>,
     params: LibrarySearchParams,
 ) -> Result<LibrarySearchResponse, String> {
+    let generation = Arc::clone(&state.search_generation);
+    let request_generation = generation.fetch_add(1, Ordering::SeqCst) + 1;
     tauri::async_runtime::spawn_blocking(move || {
         let conn = open_read_conn(&params.samples_dir)?;
+        let started = std::time::Instant::now();
+        conn.progress_handler(
+            1_000,
+            Some(move || {
+                generation.load(Ordering::Relaxed) != request_generation
+                    || started.elapsed() > std::time::Duration::from_secs(10)
+            }),
+        );
         search::search(&conn, params)
     })
     .await
@@ -965,6 +978,25 @@ mod search {
             .as_deref()
             .is_some_and(|query| !query.trim().is_empty());
         let (where_sql, mut where_params) = build_filter(&params, !has_query)?;
+        let tag_driver = if !has_query && params.pack_uuid.is_none() {
+            params
+                .tags
+                .iter()
+                .filter_map(|tag| {
+                    conn.query_row(
+                        "SELECT sample_count FROM library_tag_counts WHERE tag_uuid = ?1",
+                        params![tag],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .ok()
+                    .map(|count| (tag.clone(), count))
+                })
+                .min_by_key(|(_, count)| *count)
+                .filter(|(_, count)| *count <= 50_000)
+                .map(|(tag, _)| tag)
+        } else {
+            None
+        };
         let exact_total: Option<i64> = if is_unfiltered(&params) {
             Some(query_scalar(
                 conn,
@@ -997,6 +1029,26 @@ mod search {
                 "SELECT s.uuid FROM samples_fts f JOIN samples s ON s.uuid = f.sample_uuid
                  WHERE f.samples_fts MATCH ? AND {} ORDER BY f.rowid DESC LIMIT {} OFFSET {}",
                 where_sql, fetch_limit, offset
+            )
+        } else if let Some(tag_driver) = tag_driver {
+            where_params.insert(0, tag_driver.into());
+            let sort_sql = match params.sort.as_str() {
+                "pack_popularity" => format!(
+                    "s.pack_popularity_score IS NULL, s.pack_popularity_score {}, s.ingested_at DESC",
+                    if order == "ASC" { "ASC" } else { "DESC" }
+                ),
+                "bpm" => format!("s.bpm {order}"),
+                "duration" => format!("s.duration_ms {order}"),
+                "key" => format!("s.key {order}"),
+                "pack_name" => format!("s.pack_name {order}"),
+                "name" => format!("s.name {order}"),
+                _ => format!("s.ingested_at {order}"),
+            };
+            format!(
+                "SELECT s.uuid FROM sample_tags driver INDEXED BY idx_sample_tags_tag
+                 JOIN samples s ON s.uuid = driver.sample_uuid
+                 WHERE driver.tag_uuid = ? AND {} ORDER BY {} LIMIT {} OFFSET {}",
+                where_sql, sort_sql, fetch_limit, offset
             )
         } else if params.sort == "pack_popularity" {
             let index = if params.pack_uuid.is_some() {
