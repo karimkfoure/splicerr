@@ -134,7 +134,8 @@ function parseArgs(argv) {
     for (let i = 0; i < argv.length; i++) {
         if (!argv[i].startsWith("--")) continue
         const key = argv[i].slice(2).replace(/-([a-z])/g, (_, c) => c.toUpperCase())
-        out[key] = argv[i + 1]?.startsWith("--") ? true : argv[++i]
+        const next = argv[i + 1]
+        out[key] = next == null || next.startsWith("--") ? true : argv[++i]
     }
     return out
 }
