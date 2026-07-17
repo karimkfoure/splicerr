@@ -6,6 +6,18 @@ import { chromium } from "playwright"
 
 const GRAPHQL_URL = "https://surfaces-graphql.splice.com/graphql"
 const PAGE_SIZE = 50
+const PACKS_QUERY = `query PacksSearch($page: Int, $limit: Int = 50) {
+  assetsSearch(
+    filter: {legacy: true, published: true, asset_type_slug: pack}
+    pagination: {page: $page, limit: $limit}
+    sort: {sort: popularity, order: DESC}
+  ) {
+    items { ... on PackAsset { uuid name __typename } __typename }
+    pagination_metadata { currentPage totalPages __typename }
+    response_metadata { records __typename }
+    __typename
+  }
+}`
 const args = parseArgs(process.argv.slice(2))
 const samplesDir = path.resolve(args.samplesDir ?? "/Volumes/disco/splicerr")
 const dbPath = path.join(samplesDir, ".splicerr", "library.db")
@@ -180,19 +192,6 @@ async function queryGraphql(page, requestedPage) {
         throw lastError
     }, { requestedPage, pageSize: PAGE_SIZE, query: PACKS_QUERY })
 }
-
-const PACKS_QUERY = `query PacksSearch($page: Int, $limit: Int = 50) {
-  assetsSearch(
-    filter: {legacy: true, published: true, asset_type_slug: pack}
-    pagination: {page: $page, limit: $limit}
-    sort: {sort: popularity, order: DESC}
-  ) {
-    items { ... on PackAsset { uuid name __typename } __typename }
-    pagination_metadata { currentPage totalPages __typename }
-    response_metadata { records __typename }
-    __typename
-  }
-}`
 
 function assertLibrary() {
     if (!existsSync(dbPath)) throw new Error(`Library DB not found: ${dbPath}`)
