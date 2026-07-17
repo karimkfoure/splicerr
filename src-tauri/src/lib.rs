@@ -196,6 +196,7 @@ pub fn run() {
             library::library_batch_flags,
             library::library_set_favorite,
             library::library_search,
+            library::library_count,
             library::library_tag_summary,
             library::library_list_packs,
             library::library_pack_cached_counts,

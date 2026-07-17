@@ -339,6 +339,28 @@ export async function librarySearch(params: LibrarySearchParams) {
     } satisfies LibrarySearchResponse
 }
 
+export async function libraryCount(params: LibrarySearchParams) {
+    return invoke<number>("library_count", {
+        params: {
+            query: params.query ?? null,
+            tags: params.tags,
+            cursor: null,
+            limit: params.limit,
+            sort: params.sort,
+            order: params.order,
+            favoritesOnly: params.favoritesOnly,
+            assetCategorySlug: params.assetCategorySlug ?? null,
+            key: params.key ?? null,
+            chordType: params.chordType ?? null,
+            minBpm: params.minBpm ?? null,
+            maxBpm: params.maxBpm ?? null,
+            bpm: params.bpm ?? null,
+            packUuid: params.packUuid ?? null,
+            samplesDir: params.samplesDir,
+        },
+    })
+}
+
 export async function libraryTagSummary(params: LibrarySearchParams) {
     return invoke<TagSummaryEntry[]>("library_tag_summary", {
         params: {

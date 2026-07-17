@@ -102,6 +102,7 @@
     let tagsContainerRef = $state<HTMLElement>(null!)
     let tagsDrawerRef = $state<HTMLElement>(null!)
     let searchInputRef = $state<HTMLInputElement>(null!)
+    let libraryLoadSentinel = $state<HTMLElement>(null!)
     let online = $state(
         typeof navigator !== "undefined" ? navigator.onLine : true
     )
@@ -213,10 +214,8 @@
             viewportScrollTop = viewportRef.scrollTop
             viewportHeight = viewportRef.clientHeight
             if (loading.assets) return
-            const preloadDistance =
-                browseStore.mode === "library"
-                    ? viewportRef.clientHeight * 3
-                    : viewportRef.clientHeight
+            if (browseStore.mode === "library") return
+            const preloadDistance = viewportRef.clientHeight
             const nearBottom =
                 viewportRef.scrollTop + viewportRef.clientHeight >=
                 viewportRef.scrollHeight - preloadDistance
@@ -235,6 +234,20 @@
         })
         viewportResize.observe(viewportRef)
         viewportHeight = viewportRef.clientHeight
+        const libraryLoader = new IntersectionObserver(
+            (entries) => {
+                if (
+                    entries.some((entry) => entry.isIntersecting) &&
+                    browseStore.mode === "library" &&
+                    dataStore.has_more &&
+                    !loading.assets
+                ) {
+                    fetchAssets()
+                }
+            },
+            { root: viewportRef, rootMargin: "200% 0px" }
+        )
+        libraryLoader.observe(libraryLoadSentinel)
 
         searchInputRef.focus()
 
@@ -245,6 +258,7 @@
             window.removeEventListener("offline", onOffline)
             viewportRef.removeEventListener("scroll", onViewportScroll)
             viewportResize.disconnect()
+            libraryLoader.disconnect()
         }
     })
 </script>
@@ -400,7 +414,13 @@
                 {#if browseStore.mode === "splice"}
                     {dataStore.total_records.toLocaleString()} results
                 {:else}
-                    Local results
+                    {#if dataStore.total_exact}
+                        {dataStore.total_records.toLocaleString()} results
+                    {:else if dataStore.total_counting}
+                        Counting results…
+                    {:else}
+                        Local results
+                    {/if}
                 {/if}
             </div>
             {#if browseStore.mode === "splice"}
@@ -667,6 +687,11 @@
             {#if browseStore.mode === "library" && localVisibleEnd < dataStore.sampleAssets.length}
                 <div style={`height: ${(dataStore.sampleAssets.length - localVisibleEnd) * LOCAL_ROW_HEIGHT}px`}></div>
             {/if}
+            <div
+                bind:this={libraryLoadSentinel}
+                class="h-px shrink-0"
+                aria-hidden="true"
+            ></div>
             {#if loading.fetchError && dataStore.sampleAssets.length > 0}
                 <div
                     class="flex flex-col py-8 gap-2 justify-center items-center text-muted-foreground"

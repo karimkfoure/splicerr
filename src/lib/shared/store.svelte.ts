@@ -22,6 +22,7 @@ import { pitchShiftAudioBuffer, semitonesFor } from "./transpose.svelte"
 import { audioBufferToWav, decodeAudioFromURL } from "./wav"
 import {
     libraryBatchFlags,
+    libraryCount,
     librarySearch,
     type BrowseMode,
 } from "$lib/library/api"
@@ -71,6 +72,7 @@ export const dataStore = $state({
     tag_summary: [] as TagSummaryEntry[],
     total_records: 0,
     total_exact: true,
+    total_counting: false,
     has_more: false,
 })
 
@@ -220,6 +222,7 @@ export const storeCallbacks = $state({
 let currentQueryIdentity: string = ""
 let alignListAfterBrowseModeSwitch = false
 let libraryRequestId = 0
+let libraryCountRequestId = 0
 let libraryNextCursor: string | null = null
 let libraryAppendInFlight = false
 
@@ -231,11 +234,13 @@ function applyBrowseModeListReset() {
 
 export function resetAssetList() {
     libraryRequestId += 1
+    libraryCountRequestId += 1
     currentQueryIdentity = ""
     queryStore.page = 1
     libraryNextCursor = null
     libraryAppendInFlight = false
     dataStore.sampleAssets = []
+    dataStore.total_counting = false
     loading.fetchError = null
 }
 
@@ -346,6 +351,7 @@ function fetchLibraryAssets() {
     loading.assets = true
     loading.fetchError = null
     const requestId = ++libraryRequestId
+    const countRequestId = isAppend ? libraryCountRequestId : ++libraryCountRequestId
     if (isAppend) libraryAppendInFlight = true
 
     librarySearch({
@@ -396,6 +402,41 @@ function fetchLibraryAssets() {
             dataStore.tag_summary = result.tagSummary
             loading.fetchError = null
             applyBrowseModeListReset()
+            if (!isAppend && !result.totalExact) {
+                dataStore.total_counting = true
+                libraryCount({
+                    query: queryStore.query,
+                    tags: [...dataStore.tags],
+                    limit: LIBRARY_PER_PAGE,
+                    sort: librarySortField(),
+                    order: queryStore.order,
+                    favoritesOnly: browseStore.libraryFavoritesOnly,
+                    assetCategorySlug: queryStore.asset_category_slug,
+                    key: queryStore.key,
+                    chordType: queryStore.chord_type,
+                    minBpm: queryStore.min_bpm,
+                    maxBpm: queryStore.max_bpm,
+                    bpm: queryStore.bpm,
+                    packUuid: queryStore.pack_uuid,
+                    samplesDir: config.samples_dir!,
+                })
+                    .then((total) => {
+                        if (
+                            countRequestId !== libraryCountRequestId ||
+                            identityBeforeFetch !== libraryQueryIdentity()
+                        ) return
+                        dataStore.total_records = total
+                        dataStore.total_exact = true
+                    })
+                    .catch((error) => {
+                        console.warn("library_count failed", error)
+                    })
+                    .finally(() => {
+                        if (countRequestId === libraryCountRequestId) {
+                            dataStore.total_counting = false
+                        }
+                    })
+            }
         })
         .catch((error: Error) => {
             if (requestId !== libraryRequestId) return

@@ -789,6 +789,19 @@ pub async fn library_search(
 }
 
 #[tauri::command]
+pub async fn library_count(
+    _state: State<'_, LibraryState>,
+    params: LibrarySearchParams,
+) -> Result<i64, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let conn = open_read_conn(&params.samples_dir)?;
+        search::count(&conn, &params)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
 pub async fn library_tag_summary(
     _state: State<'_, LibraryState>,
     params: LibrarySearchParams,
@@ -1007,6 +1020,7 @@ mod search {
         conn: &Connection,
         params: LibrarySearchParams,
     ) -> Result<LibrarySearchResponse, String> {
+        let started_at = std::time::Instant::now();
         let has_query = params
             .query
             .as_deref()
@@ -1114,8 +1128,22 @@ mod search {
                 "name" => "s.name COLLATE NOCASE",
                 _ => "s.ingested_at",
             };
+            let source = if unfiltered {
+                let index = match params.sort.as_str() {
+                    "pack_popularity" => "idx_library_popularity",
+                    "bpm" => "idx_samples_bpm",
+                    "duration" => "idx_library_duration",
+                    "key" => "idx_samples_key",
+                    "pack_name" => "idx_library_pack_name",
+                    "name" => "idx_library_name",
+                    _ => "idx_samples_ingested",
+                };
+                format!("samples s INDEXED BY {index}")
+            } else {
+                "samples s".to_string()
+            };
             (
-                "samples s".to_string(),
+                source,
                 String::new(),
                 expr.to_string(),
                 expr.to_string(),
@@ -1125,11 +1153,8 @@ mod search {
         let mut seek_sql = String::new();
         if let (Some(value), Some(uuid)) = (cursor_value, cursor_uuid) {
             let op = if order == "ASC" { ">" } else { "<" };
-            seek_sql = format!(
-                " AND (({cursor_expr}) {op} ? OR (({cursor_expr}) = ? AND s.uuid {op} ?))"
-            );
+            seek_sql = format!(" AND (({cursor_expr}), s.uuid) {op} (?, ?)");
             let value = json_to_sql_value(value)?;
-            where_params.push(value.clone());
             where_params.push(value);
             where_params.push(uuid.to_string().into());
         }
@@ -1162,6 +1187,14 @@ mod search {
 
         let tag_summary = tag_summary(conn, params)?;
 
+        eprintln!(
+            "library_search cursor={} items={} has_more={} elapsed_ms={}",
+            cursor.is_some(),
+            items.len(),
+            has_more,
+            started_at.elapsed().as_millis()
+        );
+
         Ok(LibrarySearchResponse {
             items,
             total_records: total,
@@ -1170,6 +1203,68 @@ mod search {
             next_cursor,
             tag_summary,
         })
+    }
+
+    pub fn count(conn: &Connection, params: &LibrarySearchParams) -> Result<i64, String> {
+        if is_unfiltered(params) {
+            return query_scalar(
+                conn,
+                "SELECT cached_sample_count FROM library_stats WHERE id = 1",
+                &[],
+            );
+        }
+        let has_query = params
+            .query
+            .as_deref()
+            .is_some_and(|query| !query.trim().is_empty());
+        let tag_driver = if !has_query && params.pack_uuid.is_none() {
+            params
+                .tags
+                .iter()
+                .filter_map(|tag| {
+                    conn.query_row(
+                        "SELECT sample_count FROM library_tag_counts WHERE tag_uuid = ?1",
+                        params![tag],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .ok()
+                    .map(|count| (tag.clone(), count))
+                })
+                .min_by_key(|(_, count)| *count)
+                .map(|(tag, _)| tag)
+        } else {
+            None
+        };
+        let (where_sql, mut values) = build_filter(params, !has_query, tag_driver.as_deref())?;
+        let (source, source_filter) = if has_query {
+            let fts_query = params
+                .query
+                .as_deref()
+                .unwrap_or_default()
+                .trim()
+                .split_whitespace()
+                .map(|word| format!("\"{}\"", word.replace('"', "")))
+                .collect::<Vec<_>>()
+                .join(" ");
+            values.insert(0, fts_query.into());
+            (
+                "samples_fts f JOIN samples s ON s.uuid = f.sample_uuid",
+                "f.samples_fts MATCH ? AND",
+            )
+        } else if let Some(driver) = tag_driver {
+            values.insert(0, driver.into());
+            (
+                "sample_tags driver INDEXED BY idx_sample_tags_tag JOIN samples s ON s.uuid = driver.sample_uuid",
+                "driver.tag_uuid = ? AND",
+            )
+        } else {
+            ("samples s", "")
+        };
+        query_scalar(
+            conn,
+            &format!("SELECT COUNT(*) FROM {source} WHERE {source_filter} {where_sql}"),
+            &values,
+        )
     }
 
     fn json_to_sql_value(value: &serde_json::Value) -> Result<Value, String> {
