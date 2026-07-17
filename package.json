@@ -9,6 +9,8 @@
     "preview": "vite preview",
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
     "backfill:headless": "node scripts/splice-headless-backfill.mjs",
+    "backfill:covers": "node scripts/backfill-library-covers.mjs",
+    "backfill:bitrates": "node scripts/backfill-library-bitrates.mjs",
     "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
     "tauri": "tauri"
   },

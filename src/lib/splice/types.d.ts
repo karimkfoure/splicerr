@@ -72,6 +72,7 @@ export type SampleAsset = {
     chord_type?: string
     key?: string
     duration: number
+    bitrate_kbps?: number | null
     asset_category_slug: AssetCategorySlug
     display_file_path?: string | null
     display_name?: string | null

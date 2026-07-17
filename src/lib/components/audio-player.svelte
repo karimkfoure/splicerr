@@ -43,6 +43,7 @@
               )
             : ""
     )
+    const bitrateKbps = $derived(globalAudio.currentAsset?.bitrate_kbps)
 </script>
 
 <div class={cn("flex flex-col w-full", className)} {...restProps}>
@@ -161,6 +162,14 @@
                         </div>
                     </div>
                 </div>
+            </div>
+        {/if}
+        {#if bitrateKbps !== null}
+            <div
+                class="shrink-0 text-xs tabular-nums text-muted-foreground"
+                title="Average MP3 bitrate"
+            >
+                {bitrateKbps} kbps
             </div>
         {/if}
         <div class="flex items-center gap-2">

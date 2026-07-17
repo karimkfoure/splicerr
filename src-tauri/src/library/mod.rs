@@ -1281,6 +1281,7 @@ mod search {
         name: String,
         audio_rel: String,
         duration: i64,
+        bitrate_kbps: Option<i64>,
         bpm: Option<i64>,
         key: Option<String>,
         chord_type: Option<String>,
@@ -1306,7 +1307,7 @@ mod search {
         let rows = query_rows(
             conn,
             &format!(
-                "SELECT s.uuid, s.name, s.relative_audio_path, s.duration_ms, s.bpm, s.key, s.chord_type,
+                "SELECT s.uuid, s.name, s.relative_audio_path, s.duration_ms, s.bitrate_kbps, s.bpm, s.key, s.chord_type,
                         s.asset_category_slug, s.favorite, s.waveform_relative_path,
                         p.uuid, p.name, p.cover_relative_path, p.cover_source_url
                  FROM samples s JOIN packs p ON p.uuid = s.pack_uuid
@@ -1319,16 +1320,17 @@ mod search {
                     name: r.get(1)?,
                     audio_rel: r.get(2)?,
                     duration: r.get(3)?,
-                    bpm: r.get(4)?,
-                    key: r.get(5)?,
-                    chord_type: r.get(6)?,
-                    category: r.get(7)?,
-                    favorite: r.get::<_, i32>(8)? != 0,
-                    waveform_rel: r.get(9)?,
-                    pack_uuid: r.get(10)?,
-                    pack_name: r.get(11)?,
-                    cover_rel: r.get(12)?,
-                    cover_source_url: r.get(13)?,
+                    bitrate_kbps: r.get(4)?,
+                    bpm: r.get(5)?,
+                    key: r.get(6)?,
+                    chord_type: r.get(7)?,
+                    category: r.get(8)?,
+                    favorite: r.get::<_, i32>(9)? != 0,
+                    waveform_rel: r.get(10)?,
+                    pack_uuid: r.get(11)?,
+                    pack_name: r.get(12)?,
+                    cover_rel: r.get(13)?,
+                    cover_source_url: r.get(14)?,
                 })
             },
         )?;
@@ -1392,6 +1394,7 @@ mod search {
                     "uuid": row.uuid,
                     "name": row.name,
                     "duration": row.duration,
+                    "bitrate_kbps": row.bitrate_kbps,
                     "bpm": row.bpm,
                     "key": row.key,
                     "chord_type": row.chord_type,

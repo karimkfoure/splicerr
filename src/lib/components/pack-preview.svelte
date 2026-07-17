@@ -4,9 +4,7 @@
     import { openUrl } from "@tauri-apps/plugin-opener"
     import { inLibraryState } from "$lib/library/session-cache.svelte"
     import {
-        isRemoteUrl,
         localPackCoverAssetUrl,
-        resolvePackCoverRemoteUrl,
     } from "$lib/shared/pack-cover"
 
     const {
@@ -28,7 +26,6 @@
     $effect(() => {
         void inLibraryState.version
         const packName = pack?.name
-        const remote = pack ? resolvePackCoverRemoteUrl(pack) : undefined
         const embedded = pack?.files?.find(
             (file) => file.asset_file_type_slug === "cover_image"
         )?.url
@@ -37,7 +34,7 @@
             displaySrc = ""
             return
         }
-        if (embedded && !isRemoteUrl(embedded)) {
+        if (embedded) {
             displaySrc = embedded
             return
         }
@@ -47,9 +44,13 @@
                 displaySrc = local
                 return
             }
-            displaySrc = isRemoteUrl(remote) ? remote! : ""
+            displaySrc = ""
         })()
     })
+
+    function handleImageError() {
+        imgFailed = true
+    }
 
     const packURL = $derived(
         `https://splice.com/sounds/packs/${pack?.permalink_base_url}/${pack?.permalink_slug}`
@@ -68,7 +69,7 @@
                     alt={name}
                     class={`size-${size} rounded`}
                     draggable="false"
-                    onerror={() => (imgFailed = true)}
+                    onerror={handleImageError}
                 />
             {:else}
                 <div
@@ -89,7 +90,7 @@
                         src={displaySrc}
                         alt={name}
                         class="w-full rounded"
-                        onerror={() => (imgFailed = true)}
+                        onerror={handleImageError}
                     />
                 </button>
             {/if}

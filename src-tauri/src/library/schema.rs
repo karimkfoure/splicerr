@@ -58,21 +58,21 @@ CREATE VIRTUAL TABLE IF NOT EXISTS samples_fts USING fts5(
 ";
 
 pub fn migrate(conn: &Connection) -> Result<(), String> {
-    let version: Option<i32> = conn
-        .query_row(
-            "SELECT version FROM schema_migrations ORDER BY version DESC LIMIT 1",
-            [],
-            |r| r.get(0),
+    let applied = |version| {
+        conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = ?1)",
+            [version],
+            |row| row.get::<_, bool>(0),
         )
-        .ok();
-    let v = version.unwrap_or(0);
-    if v < 1 {
+        .unwrap_or(false)
+    };
+    if !applied(1) {
         conn.execute_batch(MIGRATION_V1)
             .map_err(|e| e.to_string())?;
         conn.execute("INSERT INTO schema_migrations (version) VALUES (1)", [])
             .map_err(|e| e.to_string())?;
     }
-    if v < 2 {
+    if !applied(2) {
         conn.execute_batch(
             "UPDATE samples SET key = UPPER(key) WHERE key IS NOT NULL AND key != '';
              UPDATE samples SET chord_type = LOWER(chord_type)
@@ -82,13 +82,13 @@ pub fn migrate(conn: &Connection) -> Result<(), String> {
         conn.execute("INSERT INTO schema_migrations (version) VALUES (2)", [])
             .map_err(|e| e.to_string())?;
     }
-    if v < 3 {
+    if !applied(3) {
         conn.execute_batch("ALTER TABLE packs ADD COLUMN cover_source_url TEXT;")
             .map_err(|e| e.to_string())?;
         conn.execute("INSERT INTO schema_migrations (version) VALUES (3)", [])
             .map_err(|e| e.to_string())?;
     }
-    if v < 4 {
+    if !applied(4) {
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS pack_rank_observations (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -115,13 +115,13 @@ pub fn migrate(conn: &Connection) -> Result<(), String> {
         conn.execute("INSERT INTO schema_migrations (version) VALUES (4)", [])
             .map_err(|e| e.to_string())?;
     }
-    if v < 5 {
+    if !applied(5) {
         conn.execute_batch("ALTER TABLE packs ADD COLUMN listable_sample_total INTEGER;")
             .map_err(|e| e.to_string())?;
         conn.execute("INSERT INTO schema_migrations (version) VALUES (5)", [])
             .map_err(|e| e.to_string())?;
     }
-    if v < 6 {
+    if !applied(6) {
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS mirror_jobs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -177,7 +177,7 @@ pub fn migrate(conn: &Connection) -> Result<(), String> {
         conn.execute("INSERT INTO schema_migrations (version) VALUES (6)", [])
             .map_err(|e| e.to_string())?;
     }
-    if v < 7 {
+    if !applied(7) {
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS library_tag_counts (
                 tag_uuid TEXT PRIMARY KEY,
@@ -237,7 +237,7 @@ pub fn migrate(conn: &Connection) -> Result<(), String> {
         conn.execute("INSERT INTO schema_migrations (version) VALUES (7)", [])
             .map_err(|e| e.to_string())?;
     }
-    if v < 8 {
+    if !applied(8) {
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS library_stats (
                 id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -286,7 +286,7 @@ pub fn migrate(conn: &Connection) -> Result<(), String> {
         conn.execute("INSERT INTO schema_migrations (version) VALUES (8)", [])
             .map_err(|e| e.to_string())?;
     }
-    if v < 9 {
+    if !applied(9) {
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS library_pack_counts (
                 pack_uuid TEXT PRIMARY KEY,
@@ -345,6 +345,19 @@ pub fn migrate(conn: &Connection) -> Result<(), String> {
         )
         .map_err(|e| e.to_string())?;
         conn.execute("INSERT INTO schema_migrations (version) VALUES (9)", [])
+            .map_err(|e| e.to_string())?;
+    }
+    if !applied(10) {
+        conn.execute_batch(
+            "ALTER TABLE packs ADD COLUMN cover_cached_at INTEGER NOT NULL DEFAULT 0;
+             ALTER TABLE samples ADD COLUMN bitrate_kbps INTEGER;
+             CREATE INDEX IF NOT EXISTS idx_packs_cover_pending
+                 ON packs(uuid) WHERE cover_cached_at = 0 AND cover_source_url IS NOT NULL;
+             CREATE INDEX IF NOT EXISTS idx_samples_bitrate_pending
+                 ON samples(uuid) WHERE audio_cached_at > 0 AND bitrate_kbps IS NULL;",
+        )
+        .map_err(|e| e.to_string())?;
+        conn.execute("INSERT INTO schema_migrations (version) VALUES (10)", [])
             .map_err(|e| e.to_string())?;
     }
     Ok(())

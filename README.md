@@ -66,6 +66,15 @@ Random-stream seeds and cursors are checkpointed in SQLite after every committed
 
 Transient GraphQL throttling and Cloudflare `5xx` responses retry with short exponential backoff, which prevents late-pass listing work from being discarded by a single gateway error.
 
+After a headless mirror, materialize pack artwork and precompute average MP3 bitrate for fully offline browsing:
+
+```bash
+pnpm backfill:covers -- --samples-dir /Volumes/disco/splicerr
+pnpm backfill:bitrates -- --samples-dir /Volumes/disco/splicerr
+```
+
+Both commands only process pending rows and are safe to restart. Add `--check` when an explicit full SQLite integrity check is desired before maintenance.
+
 ### Headless backfill performance log
 
 Representative local runs, normalized to 1,000 saved samples. Network conditions and the cached/missing ratio vary, so treat these as historical throughput markers rather than a formal benchmark.
