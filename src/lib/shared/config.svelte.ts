@@ -46,6 +46,7 @@ const DEFAULT_CONFIG = {
 let samplesDirValid = $state(false)
 
 export let settingsDialog = $state({ open: false })
+export const configLoadState = $state({ loaded: false })
 
 export const isSamplesDirValid = () => samplesDirValid
 
@@ -98,6 +99,7 @@ export async function loadConfig() {
     }
 
     await validateSamplesDir()
+    configLoadState.loaded = true
 }
 
 export async function saveConfig() {
