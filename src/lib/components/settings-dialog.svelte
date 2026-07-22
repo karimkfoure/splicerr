@@ -125,6 +125,27 @@
                 </div>
             </div>
             <div class="flex flex-col gap-2">
+                <Label for="wavCorrectionToggle">WAV Correction</Label>
+                <p class="text-muted-foreground text-sm">
+                    Trim MP3 padding and correct loop length when exporting WAV
+                    files. Enabled by default.
+                </p>
+                <div class="flex items-center gap-2">
+                    <Switch
+                        id="wavCorrectionToggle"
+                        checked={config.wav_correction_enabled}
+                        onchange={() => {
+                            config.wav_correction_enabled =
+                                !config.wav_correction_enabled
+                            saveConfig()
+                        }}
+                    />
+                    <Label for="wavCorrectionToggle" class="cursor-pointer">
+                        {config.wav_correction_enabled ? "Enabled" : "Disabled"}
+                    </Label>
+                </div>
+            </div>
+            <div class="flex flex-col gap-2">
                 <Label for="repeatAudioToggle">Repeat Audio</Label>
                 <p class="text-muted-foreground text-sm">
                     When enabled, audio will repeat after finishing.
