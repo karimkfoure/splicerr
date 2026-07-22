@@ -78,7 +78,7 @@ export const dataStore = $state({
 })
 
 export const browseStore = $state({
-    mode: "splice" as BrowseMode,
+    mode: "library" as BrowseMode,
     libraryFavoritesOnly: false,
 })
 
@@ -182,7 +182,7 @@ export const chord_types = ["major", "minor"]
 
 export const queryStore = $state({
     query: "",
-    sort: DEFAULT_SORT as AssetSortType,
+    sort: "ingested_at" as AssetSortType,
     random_seed: randomSeed(),
     order: "DESC" as SortOrder,
     page: 1,
