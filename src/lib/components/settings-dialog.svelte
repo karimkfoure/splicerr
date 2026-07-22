@@ -52,7 +52,7 @@
             "text-muted-foreground flex-shrink-0"
         )}><Settings /></Dialog.Trigger
     >
-    <Dialog.Content>
+    <Dialog.Content class="max-h-[90vh] overflow-y-auto">
         <Dialog.Header>
             <Dialog.Title>Settings</Dialog.Title>
         </Dialog.Header>
