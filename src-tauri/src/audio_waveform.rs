@@ -3,6 +3,8 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
 const WAVEFORM_BINS: usize = 320;
@@ -114,9 +116,9 @@ fn write_cache(
     source_size: i64,
     source_mtime_ns: i64,
     bins: &[[u8; 3]],
-) {
+) -> Result<(), String> {
     let rgb = bins.iter().flatten().copied().collect::<Vec<_>>();
-    let _ = conn.execute(
+    conn.execute(
         "INSERT INTO waveform_cache
              (cache_key, version, source_size, source_mtime_ns, rgb)
          VALUES (?1, ?2, ?3, ?4, ?5)
@@ -132,7 +134,9 @@ fn write_cache(
             source_mtime_ns,
             rgb
         ],
-    );
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(())
 }
 
 fn spectral_bins(sample_rate: u32, channels: u16, samples: &[f32]) -> Vec<[u8; 3]> {
@@ -206,7 +210,7 @@ fn local_waveform_sync(params: LocalWaveformParams) -> Result<LocalWaveformResul
     let bins = spectral_bins(audio.sample_rate, audio.channels, &audio.interleaved);
     let analyzed = Instant::now();
     if let Some(conn) = cache.as_ref() {
-        write_cache(conn, key, source_size, source_mtime_ns, &bins);
+        let _ = write_cache(conn, key, source_size, source_mtime_ns, &bins);
     }
     Ok(LocalWaveformResult {
         bins,
@@ -214,6 +218,201 @@ fn local_waveform_sync(params: LocalWaveformParams) -> Result<LocalWaveformResul
         analyze_ms: (analyzed - decoded).as_secs_f64() * 1_000.0,
         cache_hit: false,
     })
+}
+
+#[derive(Debug, Clone)]
+pub struct WaveformBackfillOptions {
+    pub samples_dir: String,
+    pub rebuild: bool,
+    pub limit: Option<usize>,
+    pub concurrency: usize,
+    pub batch_size: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WaveformBackfillSummary {
+    pub processed: usize,
+    pub generated: usize,
+    pub already_cached: usize,
+    pub failed: usize,
+    pub failures: Vec<String>,
+    pub complete: bool,
+    pub elapsed_ms: f64,
+}
+
+struct ComputedWaveform {
+    key: i64,
+    source_size: i64,
+    source_mtime_ns: i64,
+    bins: Vec<[u8; 3]>,
+}
+
+fn compute_waveform_entry(
+    samples_dir: &str,
+    relative_audio_path: &str,
+) -> Result<ComputedWaveform, String> {
+    let relative = safe_relative_path(relative_audio_path)?;
+    let relative_key = relative.to_string_lossy().into_owned();
+    let source = PathBuf::from(samples_dir).join(&relative);
+    let (source_size, source_mtime_ns) = source_signature(&source)?;
+    let audio = decode_mp3(&source)?;
+    Ok(ComputedWaveform {
+        key: cache_key(&relative_key),
+        source_size,
+        source_mtime_ns,
+        bins: spectral_bins(audio.sample_rate, audio.channels, &audio.interleaved),
+    })
+}
+
+pub fn backfill_local_waveforms<F>(
+    options: WaveformBackfillOptions,
+    on_progress: F,
+) -> Result<WaveformBackfillSummary, String>
+where
+    F: Fn(&WaveformBackfillSummary),
+{
+    let started = Instant::now();
+    let library_path = PathBuf::from(&options.samples_dir).join(".splicerr/library.db");
+    let library = Connection::open_with_flags(
+        library_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(|error| error.to_string())?;
+    library
+        .execute_batch("PRAGMA query_only=ON; PRAGMA busy_timeout=3000;")
+        .map_err(|error| error.to_string())?;
+
+    let mut cache = open_cache(&options.samples_dir)?;
+    if options.rebuild {
+        cache
+            .execute("DELETE FROM waveform_cache", [])
+            .map_err(|error| error.to_string())?;
+    }
+
+    let concurrency = options.concurrency.clamp(1, 64);
+    let batch_size = options.batch_size.clamp(1, 10_000);
+    let limit = options.limit.unwrap_or(usize::MAX);
+    let mut cursor = 0_i64;
+    let mut summary = WaveformBackfillSummary {
+        processed: 0,
+        generated: 0,
+        already_cached: 0,
+        failed: 0,
+        failures: Vec::new(),
+        complete: false,
+        elapsed_ms: 0.0,
+    };
+
+    while summary.processed < limit {
+        let page_size = batch_size.min(limit - summary.processed);
+        let mut statement = library
+            .prepare(
+                "SELECT rowid, relative_audio_path FROM samples
+                 WHERE audio_cached_at > 0 AND rowid > ?1
+                 ORDER BY rowid LIMIT ?2",
+            )
+            .map_err(|error| error.to_string())?;
+        let rows = statement
+            .query_map(params![cursor, page_size as i64], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|error| error.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())?;
+        if rows.is_empty() {
+            summary.complete = true;
+            break;
+        }
+        cursor = rows.last().map(|row| row.0).unwrap_or(cursor);
+        summary.processed += rows.len();
+
+        let mut pending = Vec::new();
+        for (_, relative_audio_path) in rows {
+            match safe_relative_path(&relative_audio_path).and_then(|relative| {
+                let relative_key = relative.to_string_lossy().into_owned();
+                let source = PathBuf::from(&options.samples_dir).join(relative);
+                source_signature(&source).map(|signature| (relative_key, signature))
+            }) {
+                Ok((relative_key, (source_size, source_mtime_ns)))
+                    if read_cache(
+                        &cache,
+                        cache_key(&relative_key),
+                        source_size,
+                        source_mtime_ns,
+                    )
+                    .is_some() =>
+                {
+                    summary.already_cached += 1;
+                }
+                Ok(_) => pending.push(relative_audio_path),
+                Err(error) => {
+                    summary.failed += 1;
+                    if summary.failures.len() < 20 {
+                        summary
+                            .failures
+                            .push(format!("{relative_audio_path}: {error}"));
+                    }
+                }
+            }
+        }
+
+        let next_index = AtomicUsize::new(0);
+        let results = Arc::new(Mutex::new(Vec::with_capacity(pending.len())));
+        std::thread::scope(|scope| {
+            for _ in 0..concurrency.min(pending.len()) {
+                let results = Arc::clone(&results);
+                let pending = &pending;
+                let next_index = &next_index;
+                let samples_dir = &options.samples_dir;
+                scope.spawn(move || loop {
+                    let index = next_index.fetch_add(1, Ordering::Relaxed);
+                    let Some(relative_audio_path) = pending.get(index) else {
+                        break;
+                    };
+                    let result = compute_waveform_entry(samples_dir, relative_audio_path);
+                    results
+                        .lock()
+                        .expect("waveform result mutex poisoned")
+                        .push((relative_audio_path.clone(), result));
+                });
+            }
+        });
+
+        let results = Arc::try_unwrap(results)
+            .map_err(|_| "waveform workers did not release results".to_string())?
+            .into_inner()
+            .map_err(|error| error.to_string())?;
+        let transaction = cache.transaction().map_err(|error| error.to_string())?;
+        for (relative_audio_path, result) in results {
+            match result {
+                Ok(entry) => {
+                    write_cache(
+                        &transaction,
+                        entry.key,
+                        entry.source_size,
+                        entry.source_mtime_ns,
+                        &entry.bins,
+                    )?;
+                    summary.generated += 1;
+                }
+                Err(error) => {
+                    summary.failed += 1;
+                    if summary.failures.len() < 20 {
+                        summary
+                            .failures
+                            .push(format!("{relative_audio_path}: {error}"));
+                    }
+                }
+            }
+        }
+        transaction.commit().map_err(|error| error.to_string())?;
+        summary.elapsed_ms = started.elapsed().as_secs_f64() * 1_000.0;
+        on_progress(&summary);
+    }
+
+    summary.elapsed_ms = started.elapsed().as_secs_f64() * 1_000.0;
+    Ok(summary)
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -246,7 +445,7 @@ mod tests {
         let conn = open_cache(temporary.path().to_str().unwrap()).unwrap();
         let bins = vec![[12, 34, 56]; WAVEFORM_BINS];
         let key = cache_key("Pack/sample.mp3");
-        write_cache(&conn, key, 123, 456, &bins);
+        write_cache(&conn, key, 123, 456, &bins).unwrap();
         assert_eq!(read_cache(&conn, key, 123, 456), Some(bins));
         assert_eq!(read_cache(&conn, key, 124, 456), None);
     }

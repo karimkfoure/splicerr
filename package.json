@@ -16,6 +16,7 @@
     "fixtures:ableton-trim": "node scripts/generate-ableton-trim-fixtures.mjs",
     "backfill:covers": "node scripts/backfill-library-covers.mjs",
     "backfill:bitrates": "node scripts/backfill-library-bitrates.mjs",
+    "backfill:waveforms": "cargo run --release --manifest-path src-tauri/Cargo.toml --example backfill_waveforms",
     "validate:filters": "node scripts/validate-library-filters.mjs",
     "audit:library": "node scripts/audit-library.mjs",
     "audit:exports": "node scripts/audit-exported-wavs.mjs",
