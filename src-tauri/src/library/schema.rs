@@ -66,6 +66,16 @@ pub fn migrate(conn: &Connection) -> Result<(), String> {
         )
         .unwrap_or(false)
     };
+    let has_column = |table: &str, column: &str| {
+        conn.query_row(
+            "SELECT EXISTS(
+                 SELECT 1 FROM pragma_table_info(?1) WHERE name = ?2
+             )",
+            [table, column],
+            |row| row.get::<_, bool>(0),
+        )
+        .unwrap_or(false)
+    };
     if !applied(1) {
         conn.execute_batch(MIGRATION_V1)
             .map_err(|e| e.to_string())?;
@@ -348,10 +358,19 @@ pub fn migrate(conn: &Connection) -> Result<(), String> {
             .map_err(|e| e.to_string())?;
     }
     if !applied(10) {
+        if !has_column("packs", "cover_cached_at") {
+            conn.execute_batch(
+                "ALTER TABLE packs
+                     ADD COLUMN cover_cached_at INTEGER NOT NULL DEFAULT 0;",
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        if !has_column("samples", "bitrate_kbps") {
+            conn.execute_batch("ALTER TABLE samples ADD COLUMN bitrate_kbps INTEGER;")
+                .map_err(|e| e.to_string())?;
+        }
         conn.execute_batch(
-            "ALTER TABLE packs ADD COLUMN cover_cached_at INTEGER NOT NULL DEFAULT 0;
-             ALTER TABLE samples ADD COLUMN bitrate_kbps INTEGER;
-             CREATE INDEX IF NOT EXISTS idx_packs_cover_pending
+            "CREATE INDEX IF NOT EXISTS idx_packs_cover_pending
                  ON packs(uuid) WHERE cover_cached_at = 0 AND cover_source_url IS NOT NULL;
              CREATE INDEX IF NOT EXISTS idx_samples_bitrate_pending
                  ON samples(uuid) WHERE audio_cached_at > 0 AND bitrate_kbps IS NULL;",
@@ -413,10 +432,15 @@ pub fn migrate(conn: &Connection) -> Result<(), String> {
             .map_err(|e| e.to_string())?;
     }
     if !applied(15) {
+        if !has_column("pack_popularity_backfill_checkpoint", "last_completed_at") {
+            conn.execute_batch(
+                "ALTER TABLE pack_popularity_backfill_checkpoint
+                     ADD COLUMN last_completed_at INTEGER;",
+            )
+            .map_err(|e| e.to_string())?;
+        }
         conn.execute_batch(
-            "ALTER TABLE pack_popularity_backfill_checkpoint
-                 ADD COLUMN last_completed_at INTEGER;
-             INSERT OR IGNORE INTO pack_popularity_backfill_checkpoint
+            "INSERT OR IGNORE INTO pack_popularity_backfill_checkpoint
                  (id, next_page, listed_count, done, updated_at)
              VALUES (1, 1, 0, 0, 0);",
         )
@@ -425,4 +449,30 @@ pub fn migrate(conn: &Connection) -> Result<(), String> {
             .map_err(|e| e.to_string())?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn partially_applied_column_migrations_are_idempotent() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+
+        conn.execute("DELETE FROM schema_migrations WHERE version = 10", [])
+            .unwrap();
+        conn.execute("DELETE FROM schema_migrations WHERE version = 15", [])
+            .unwrap();
+
+        migrate(&conn).unwrap();
+        let versions: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM schema_migrations WHERE version IN (10, 15)",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(versions, 2);
+    }
 }

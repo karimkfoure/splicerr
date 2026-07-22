@@ -34,7 +34,9 @@
             .catch((error) => {
                 console.error("Failed to initialize the library", error)
                 settingsDialog.open = true
-                toast("Couldn't open the library. Check the Samples Directory.", {
+                const detail =
+                    error instanceof Error ? error.message : String(error)
+                toast(`Couldn't open the library database: ${detail}`, {
                     variant: "error",
                     persist: true,
                 })

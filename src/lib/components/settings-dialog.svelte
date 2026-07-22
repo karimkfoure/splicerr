@@ -12,6 +12,7 @@
     import Label from "$lib/components/ui/label/label.svelte"
     import {
         config,
+        getLibraryConnectionError,
         isSamplesDirValid,
         saveConfig,
         settingsDialog,
@@ -99,6 +100,15 @@
                     <TriangleAlert size="16" />
                     Enter a valid path to an existing directory.
                 </div>
+                {#if getLibraryConnectionError()}
+                    <div class="flex gap-2 items-start text-warn text-sm">
+                        <TriangleAlert size="16" class="mt-0.5 shrink-0" />
+                        <span>
+                            The folder exists, but its library database couldn't
+                            be opened: {getLibraryConnectionError()}
+                        </span>
+                    </div>
+                {/if}
             </div>
             <div class="flex flex-col gap-2">
                 <Label>Offline Pack Popularity</Label>

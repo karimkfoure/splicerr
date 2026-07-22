@@ -44,10 +44,12 @@ const DEFAULT_CONFIG = {
 }
 
 let samplesDirValid = $state(false)
+let libraryConnectionError = $state<string | null>(null)
 
 export let settingsDialog = $state({ open: false })
 
 export const isSamplesDirValid = () => samplesDirValid
+export const getLibraryConnectionError = () => libraryConnectionError
 
 export let config = $state<typeof DEFAULT_CONFIG>(
     JSON.parse(JSON.stringify(DEFAULT_CONFIG))
@@ -63,10 +65,12 @@ export async function validateSamplesDir() {
     }
 
     samplesDirValid = await validate()
+    libraryConnectionError = null
     try {
         await syncLibraryConnection()
     } catch (error) {
-        samplesDirValid = false
+        libraryConnectionError =
+            error instanceof Error ? error.message : String(error)
         throw error
     }
 
