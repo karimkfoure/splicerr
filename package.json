@@ -22,7 +22,7 @@
     "audit:exports": "node scripts/audit-exported-wavs.mjs",
     "test:waveform-scheduler": "node --experimental-strip-types scripts/test-waveform-scheduler.mjs",
     "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
-    "tauri": "tauri"
+    "tauri": "node scripts/tauri-cli.mjs"
   },
   "license": "MIT",
   "dependencies": {

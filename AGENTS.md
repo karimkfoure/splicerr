@@ -160,6 +160,8 @@ cd src-tauri && cargo test ingest_and_search
 cd src-tauri && cargo test mirror
 ```
 
+`pnpm tauri dev` goes through `scripts/tauri-cli.mjs`, which refuses to start when port 1337 is already occupied. This prevents a new Tauri binary from silently attaching to an orphaned Vite server and displaying stale frontend code.
+
 ### UI / store
 
 - **Bulk download vs pack sync** — one run at a time ([`download-session.ts`](src/lib/shared/download-session.ts)). Single listing engine in [`bulk-download.svelte.ts`](src/lib/shared/bulk-download.svelte.ts) (cursor listing, 5k collect batches, 250-item slices, Rust batch materialization, inline retry) + [`bulk-download-health`](src/lib/shared/bulk-download-health.ts) adaptive concurrency. **Pack sync** ([`pack-sync.svelte.ts`](src/lib/shared/pack-sync.svelte.ts)) is a FIFO queue only: one pack at a time, each pack calls `runSpliceDownloadListingSession` with browse sort/filters (`captureBulkSpliceListingSort`, `captureSpliceSearchFilters`, optional dialog “match browse tags”) and `parentPackUuid`.
