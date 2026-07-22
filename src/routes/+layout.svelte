@@ -4,6 +4,7 @@
     import { getCurrentWebview } from "@tauri-apps/api/webview"
     import {
         config,
+        configLoadState,
         isSamplesDirValid,
         loadConfig,
         settingsDialog,
@@ -30,4 +31,6 @@
 
 <ModeWatcher />
 <Toaster />
-{@render children?.()}
+{#if configLoadState.loaded}
+    {@render children?.()}
+{/if}
