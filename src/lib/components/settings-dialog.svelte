@@ -21,8 +21,28 @@
     import { open as openDialog } from "@tauri-apps/plugin-dialog"
     import ThemeSelect from "./theme-select.svelte"
     import Switch from "$lib/components/ui/switch/switch.svelte"
+    import LoaderCircle from "lucide-svelte/icons/loader-circle"
+    import {
+        popularitySyncState,
+        refreshPopularitySyncStatus,
+        startPopularitySuperSync,
+    } from "$lib/shared/popularity-sync.svelte"
 
     let flashbangAudio = $state<HTMLAudioElement>(null!)
+
+    const lastPopularitySync = $derived(
+        popularitySyncState.status?.lastCompletedAt
+            ? new Date(
+                  popularitySyncState.status.lastCompletedAt
+              ).toLocaleString()
+            : "Never"
+    )
+
+    $effect(() => {
+        if (settingsDialog.open && isSamplesDirValid()) {
+            void refreshPopularitySyncStatus()
+        }
+    })
 </script>
 
 <Dialog.Root bind:open={settingsDialog.open}>
@@ -79,6 +99,48 @@
                     <TriangleAlert size="16" />
                     Enter a valid path to an existing directory.
                 </div>
+            </div>
+            <div class="flex flex-col gap-2">
+                <Label>Offline Pack Popularity</Label>
+                <p class="text-muted-foreground text-sm">
+                    Explore Splice's full GraphQL pack ranking and save the
+                    popularity order for offline browsing.
+                </p>
+                <p class="text-sm">
+                    Last full sync: <span class="font-medium"
+                        >{lastPopularitySync}</span
+                    >
+                </p>
+                {#if popularitySyncState.running}
+                    <p class="text-muted-foreground text-sm">
+                        Exploring page {popularitySyncState.requestedPage} ·
+                        {popularitySyncState.status?.listedCount ?? 0} remote packs
+                        scanned ·
+                        {popularitySyncState.status?.rankedLocalPacks ?? 0}/{popularitySyncState
+                            .status?.totalLocalPacks ?? 0} local packs ranked
+                    </p>
+                {:else if popularitySyncState.status}
+                    <p class="text-muted-foreground text-sm">
+                        {popularitySyncState.status.rankedLocalPacks}/{popularitySyncState
+                            .status.totalLocalPacks} local packs currently ranked
+                    </p>
+                {/if}
+                {#if popularitySyncState.error}
+                    <p class="text-warn text-sm">{popularitySyncState.error}</p>
+                {/if}
+                <Button
+                    class="w-fit text-accent-foreground"
+                    variant="outline"
+                    disabled={!isSamplesDirValid() || popularitySyncState.running}
+                    onclick={startPopularitySuperSync}
+                >
+                    {#if popularitySyncState.running}
+                        <LoaderCircle class="animate-spin" />
+                        Syncing popularity…
+                    {:else}
+                        Super sync popularity
+                    {/if}
+                </Button>
             </div>
             <div class="flex flex-col gap-2">
                 <Label for="themeSelect">Theme</Label>

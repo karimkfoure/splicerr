@@ -39,6 +39,141 @@ pub struct PackPopularityScore {
     pub updated_at: i64,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OfficialPackRankInput {
+    pub pack_uuid: String,
+    pub rank: i64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OfficialPopularityCheckpointParams {
+    pub current_page: i64,
+    pub packs: Vec<OfficialPackRankInput>,
+    pub remote_records: Option<i64>,
+    pub reported_pages: Option<i64>,
+    pub fingerprint: String,
+    pub observed_at: i64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OfficialPopularityStatus {
+    pub next_page: i64,
+    pub listed_count: i64,
+    pub remote_records: Option<i64>,
+    pub reported_pages: Option<i64>,
+    pub done: bool,
+    pub stop_reason: Option<String>,
+    pub updated_at: i64,
+    pub last_completed_at: Option<i64>,
+    pub ranked_local_packs: i64,
+    pub total_local_packs: i64,
+}
+
+pub fn official_popularity_status(conn: &Connection) -> Result<OfficialPopularityStatus, String> {
+    conn.query_row(
+        "SELECT c.next_page, c.listed_count, c.remote_records, c.reported_pages,
+                c.done, c.stop_reason, c.updated_at, c.last_completed_at,
+                (SELECT COUNT(*) FROM library_pack_counts l
+                   JOIN packs p ON p.uuid = l.pack_uuid
+                  WHERE p.popularity_rank IS NOT NULL),
+                (SELECT COUNT(*) FROM library_pack_counts)
+         FROM pack_popularity_backfill_checkpoint c WHERE c.id = 1",
+        [],
+        |row| {
+            Ok(OfficialPopularityStatus {
+                next_page: row.get(0)?,
+                listed_count: row.get(1)?,
+                remote_records: row.get(2)?,
+                reported_pages: row.get(3)?,
+                done: row.get(4)?,
+                stop_reason: row.get(5)?,
+                updated_at: row.get(6)?,
+                last_completed_at: row.get(7)?,
+                ranked_local_packs: row.get(8)?,
+                total_local_packs: row.get(9)?,
+            })
+        },
+    )
+    .map_err(|error| error.to_string())
+}
+
+pub fn restart_official_popularity(conn: &Connection) -> Result<OfficialPopularityStatus, String> {
+    let now = chrono_now_ms();
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|error| error.to_string())?;
+    tx.execute(
+        "UPDATE packs SET popularity_rank = NULL, popularity_observed_at = NULL
+         WHERE popularity_rank IS NOT NULL OR popularity_observed_at IS NOT NULL",
+        [],
+    )
+    .map_err(|error| error.to_string())?;
+    tx.execute(
+        "UPDATE pack_popularity_backfill_checkpoint SET
+             next_page = 1, listed_count = 0, remote_records = NULL,
+             reported_pages = NULL, last_fingerprint = NULL, done = 0,
+             stop_reason = NULL, updated_at = ?1
+         WHERE id = 1",
+        [now],
+    )
+    .map_err(|error| error.to_string())?;
+    tx.commit().map_err(|error| error.to_string())?;
+    official_popularity_status(conn)
+}
+
+pub fn checkpoint_official_popularity(
+    conn: &Connection,
+    params: OfficialPopularityCheckpointParams,
+) -> Result<OfficialPopularityStatus, String> {
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|error| error.to_string())?;
+    for pack in &params.packs {
+        tx.execute(
+            "UPDATE packs SET popularity_rank = ?1, popularity_observed_at = ?2
+             WHERE uuid = ?3",
+            params![pack.rank, params.observed_at, pack.pack_uuid],
+        )
+        .map_err(|error| error.to_string())?;
+    }
+    tx.execute(
+        "UPDATE pack_popularity_backfill_checkpoint SET
+             next_page = ?1, listed_count = listed_count + ?2,
+             remote_records = ?3, reported_pages = ?4, last_fingerprint = ?5,
+             done = 0, stop_reason = NULL, updated_at = ?6
+         WHERE id = 1",
+        params![
+            params.current_page + 1,
+            params.packs.len() as i64,
+            params.remote_records,
+            params.reported_pages,
+            params.fingerprint,
+            params.observed_at,
+        ],
+    )
+    .map_err(|error| error.to_string())?;
+    tx.commit().map_err(|error| error.to_string())?;
+    official_popularity_status(conn)
+}
+
+pub fn finish_official_popularity(
+    conn: &Connection,
+    reason: String,
+) -> Result<OfficialPopularityStatus, String> {
+    let now = chrono_now_ms();
+    conn.execute(
+        "UPDATE pack_popularity_backfill_checkpoint SET
+             done = 1, stop_reason = ?1, updated_at = ?2, last_completed_at = ?2
+         WHERE id = 1",
+        params![reason, now],
+    )
+    .map_err(|error| error.to_string())?;
+    official_popularity_status(conn)
+}
+
 pub fn record_pack_ranks(conn: &Connection, params: RecordPackRanksParams) -> Result<(), String> {
     if params.observations.is_empty() {
         return Ok(());
@@ -350,5 +485,56 @@ mod tests {
             .unwrap();
         assert!(proxy.is_some());
         assert!((proxy.unwrap() - b).abs() < 1e-9);
+    }
+
+    #[test]
+    fn official_sync_checkpoints_local_pack_and_records_completion() {
+        let conn = test_conn();
+        conn.execute("INSERT INTO packs (uuid, name) VALUES ('pack-a', 'A')", [])
+            .unwrap();
+        conn.execute(
+            "INSERT INTO samples (uuid, pack_uuid, name, display_name, relative_audio_path,
+             duration_ms, asset_category_slug, audio_cached_at, ingested_at, pack_name)
+             VALUES ('s1', 'pack-a', 'n', 'd', 'p/s.mp3', 1, 'oneshot', 1, 1, 'A')",
+            [],
+        )
+        .unwrap();
+
+        let initial = restart_official_popularity(&conn).unwrap();
+        assert_eq!(initial.next_page, 1);
+        assert_eq!(initial.total_local_packs, 1);
+
+        let checkpoint = checkpoint_official_popularity(
+            &conn,
+            OfficialPopularityCheckpointParams {
+                current_page: 1,
+                packs: vec![OfficialPackRankInput {
+                    pack_uuid: "pack-a".into(),
+                    rank: 7,
+                }],
+                remote_records: Some(10_000),
+                reported_pages: Some(100),
+                fingerprint: "a:z".into(),
+                observed_at: 123,
+            },
+        )
+        .unwrap();
+        assert_eq!(checkpoint.next_page, 2);
+        assert_eq!(checkpoint.listed_count, 1);
+        assert_eq!(checkpoint.ranked_local_packs, 1);
+        assert_eq!(
+            conn.query_row(
+                "SELECT popularity_rank FROM packs WHERE uuid = 'pack-a'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            7
+        );
+
+        let finished = finish_official_popularity(&conn, "empty_page".into()).unwrap();
+        assert!(finished.done);
+        assert_eq!(finished.stop_reason.as_deref(), Some("empty_page"));
+        assert!(finished.last_completed_at.is_some());
     }
 }

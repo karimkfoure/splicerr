@@ -412,5 +412,17 @@ pub fn migrate(conn: &Connection) -> Result<(), String> {
         conn.execute("INSERT INTO schema_migrations (version) VALUES (14)", [])
             .map_err(|e| e.to_string())?;
     }
+    if !applied(15) {
+        conn.execute_batch(
+            "ALTER TABLE pack_popularity_backfill_checkpoint
+                 ADD COLUMN last_completed_at INTEGER;
+             INSERT OR IGNORE INTO pack_popularity_backfill_checkpoint
+                 (id, next_page, listed_count, done, updated_at)
+             VALUES (1, 1, 0, 0, 0);",
+        )
+        .map_err(|e| e.to_string())?;
+        conn.execute("INSERT INTO schema_migrations (version) VALUES (15)", [])
+            .map_err(|e| e.to_string())?;
+    }
     Ok(())
 }

@@ -1,6 +1,10 @@
 /** One bulk, pack-sync, or mirror-backfill download run at a time. */
 
-export type DownloadSessionTag = "bulk-download" | "pack-sync" | "mirror-backfill"
+export type DownloadSessionTag =
+    | "bulk-download"
+    | "pack-sync"
+    | "mirror-backfill"
+    | "popularity-sync"
 
 let activeTag: DownloadSessionTag | null = null
 

@@ -258,6 +258,47 @@ export async function libraryPackPopularityScores(
     )
 }
 
+export type OfficialPopularityStatus = {
+    nextPage: number
+    listedCount: number
+    remoteRecords: number | null
+    reportedPages: number | null
+    done: boolean
+    stopReason: string | null
+    updatedAt: number
+    lastCompletedAt: number | null
+    rankedLocalPacks: number
+    totalLocalPacks: number
+}
+
+export async function libraryOfficialPopularityStatus() {
+    return invoke<OfficialPopularityStatus>("library_official_popularity_status")
+}
+
+export async function libraryRestartOfficialPopularity() {
+    return invoke<OfficialPopularityStatus>("library_restart_official_popularity")
+}
+
+export async function libraryCheckpointOfficialPopularity(params: {
+    currentPage: number
+    packs: { packUuid: string; rank: number }[]
+    remoteRecords: number | null
+    reportedPages: number | null
+    fingerprint: string
+    observedAt: number
+}) {
+    return invoke<OfficialPopularityStatus>(
+        "library_checkpoint_official_popularity",
+        { params }
+    )
+}
+
+export async function libraryFinishOfficialPopularity(reason: string) {
+    return invoke<OfficialPopularityStatus>("library_finish_official_popularity", {
+        reason,
+    })
+}
+
 export type MirrorSummary = {
     jobId: number | null
     status: "idle" | "running" | "paused" | "complete"

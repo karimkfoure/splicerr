@@ -107,12 +107,14 @@ COMMIT;`)
 function finish(checkpoint, reason, result = null) {
     const remoteRecords = result?.response_metadata?.records ?? checkpoint.remoteRecords
     const reportedPages = result?.pagination_metadata?.totalPages ?? checkpoint.reportedPages
+    const completedAt = Date.now()
     sqlite(`UPDATE pack_popularity_backfill_checkpoint SET
   remote_records=${sqlNumber(remoteRecords)},
   reported_pages=${sqlNumber(reportedPages)},
   done=1,
   stop_reason=${sql(reason)},
-  updated_at=${Date.now()}
+  updated_at=${completedAt},
+  last_completed_at=${completedAt}
 WHERE id=1;`)
     log(`complete reason=${reason} requestedPage=${checkpoint.nextPage} listed=${checkpoint.listed} localRanked=${countRankedLocal()}/${countLocalPacks()} remoteRecords=${remoteRecords ?? "?"} reportedPages=${reportedPages ?? "?"}`)
 }
@@ -137,6 +139,10 @@ INSERT OR IGNORE INTO pack_popularity_backfill_checkpoint
   (id, next_page, listed_count, done, updated_at)
 VALUES (1, 1, 0, 0, ${Date.now()});
 INSERT OR IGNORE INTO schema_migrations(version) VALUES(13);`)
+    const checkpointColumns = new Set(sqliteJson("PRAGMA table_info(pack_popularity_backfill_checkpoint);").map((column) => column.name))
+    if (!checkpointColumns.has("last_completed_at")) {
+        sqlite("ALTER TABLE pack_popularity_backfill_checkpoint ADD COLUMN last_completed_at INTEGER;")
+    }
 }
 
 function restartPass() {

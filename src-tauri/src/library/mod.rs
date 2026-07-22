@@ -413,6 +413,40 @@ pub fn library_pack_popularity_scores(
     })
 }
 
+#[tauri::command]
+pub fn library_official_popularity_status(
+    state: State<LibraryState>,
+) -> Result<popularity::OfficialPopularityStatus, String> {
+    with_conn(&state, popularity::official_popularity_status)
+}
+
+#[tauri::command]
+pub fn library_restart_official_popularity(
+    state: State<LibraryState>,
+) -> Result<popularity::OfficialPopularityStatus, String> {
+    with_conn(&state, popularity::restart_official_popularity)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub fn library_checkpoint_official_popularity(
+    state: State<LibraryState>,
+    params: popularity::OfficialPopularityCheckpointParams,
+) -> Result<popularity::OfficialPopularityStatus, String> {
+    with_conn(&state, |conn| {
+        popularity::checkpoint_official_popularity(conn, params)
+    })
+}
+
+#[tauri::command]
+pub fn library_finish_official_popularity(
+    state: State<LibraryState>,
+    reason: String,
+) -> Result<popularity::OfficialPopularityStatus, String> {
+    with_conn(&state, |conn| {
+        popularity::finish_official_popularity(conn, reason)
+    })
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MirrorStartParams {

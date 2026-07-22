@@ -588,6 +588,7 @@ export async function fetchSplicePacksPage(options: {
     query?: string | null
     sort?: AssetSortType
     order?: SortOrder
+    captureRank?: boolean
 }) {
     const response = await querySplice(PacksSearch, {
         page: options.page,
@@ -603,7 +604,10 @@ export async function fetchSplicePacksPage(options: {
     if (!searchResult) return null
     const limit = options.limit ?? PACKS_LIST_PAGE_SIZE
     const currentPage = searchResult.pagination_metadata.currentPage
-    if ((options.sort ?? "popularity") === "popularity") {
+    if (
+        (options.sort ?? "popularity") === "popularity" &&
+        options.captureRank !== false
+    ) {
         capturePackRankPage(
             buildPackPopularityScopeKey(options.tags),
             searchResult.items,
