@@ -38,7 +38,11 @@
         switchBrowseMode,
     } from "$lib/shared/store.svelte"
     import SettingsDialog from "$lib/components/settings-dialog.svelte"
-    import { isSamplesDirValid } from "$lib/shared/config.svelte"
+    import {
+        configLoadState,
+        getConnectedLibraryDir,
+        isSamplesDirValid,
+    } from "$lib/shared/config.svelte"
     import * as Dialog from "$lib/components/ui/dialog"
     import KeySelect from "$lib/components/key-select.svelte"
     import PackSelect from "$lib/components/pack-select.svelte"
@@ -107,6 +111,9 @@
     let online = $state(
         typeof navigator !== "undefined" ? navigator.onLine : true
     )
+    let initialFetchStarted = false
+    let pageMounted = $state(false)
+    let loadedLibraryDir: string | null | undefined = undefined
     const LOCAL_ROW_HEIGHT = 57
     const LOCAL_OVERSCAN = 12
     let viewportScrollTop = $state(0)
@@ -126,6 +133,27 @@
             ? dataStore.sampleAssets.slice(localVisibleStart, localVisibleEnd)
             : dataStore.sampleAssets
     )
+
+    $effect(() => {
+        if (!pageMounted || !configLoadState.loaded) return
+
+        const libraryDir = getConnectedLibraryDir()
+        if (!initialFetchStarted) {
+            initialFetchStarted = true
+            loadedLibraryDir = libraryDir
+            fetchAssets()
+            return
+        }
+
+        if (
+            browseStore.mode === "library" &&
+            libraryDir !== loadedLibraryDir
+        ) {
+            loadedLibraryDir = libraryDir
+            resetAssetList()
+            fetchAssets()
+        }
+    })
 
     const setBrowseMode = (mode: "splice" | "library") => {
         switchBrowseMode(mode)
@@ -251,8 +279,7 @@
         libraryLoader.observe(libraryLoadSentinel)
 
         searchInputRef.focus()
-
-        fetchAssets()
+        pageMounted = true
 
         return () => {
             window.removeEventListener("online", onOnline)

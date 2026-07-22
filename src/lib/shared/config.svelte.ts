@@ -45,11 +45,14 @@ const DEFAULT_CONFIG = {
 
 let samplesDirValid = $state(false)
 let libraryConnectionError = $state<string | null>(null)
+let connectedLibraryDir = $state<string | null>(null)
 
 export let settingsDialog = $state({ open: false })
+export const configLoadState = $state({ loaded: false })
 
 export const isSamplesDirValid = () => samplesDirValid
 export const getLibraryConnectionError = () => libraryConnectionError
+export const getConnectedLibraryDir = () => connectedLibraryDir
 
 export let config = $state<typeof DEFAULT_CONFIG>(
     JSON.parse(JSON.stringify(DEFAULT_CONFIG))
@@ -68,7 +71,9 @@ export async function validateSamplesDir() {
     libraryConnectionError = null
     try {
         await syncLibraryConnection()
+        connectedLibraryDir = samplesDirValid ? config.samples_dir : null
     } catch (error) {
+        connectedLibraryDir = null
         libraryConnectionError =
             error instanceof Error ? error.message : String(error)
         throw error
@@ -107,10 +112,12 @@ export async function loadConfig() {
     }
 
     await validateSamplesDir()
+    configLoadState.loaded = true
 }
 
 export async function saveConfig() {
     await validateSamplesDir()
+    configLoadState.loaded = true
 
     const appConfig = await appConfigDir()
     if (!(await exists(appConfig))) await mkdir(appConfig)

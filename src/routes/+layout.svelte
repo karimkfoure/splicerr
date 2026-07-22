@@ -10,7 +10,6 @@
     } from "$lib/shared/config.svelte"
     import { onMount } from "svelte"
     import Toaster from "$lib/components/toaster.svelte"
-    import { fetchAssets, resetAssetList } from "$lib/shared/store.svelte"
     import { toast } from "$lib/shared/toast.svelte"
 
     let { children } = $props()
@@ -26,10 +25,7 @@
             .then(() => {
                 if (!isSamplesDirValid()) {
                     settingsDialog.open = true
-                    return
                 }
-                resetAssetList()
-                fetchAssets()
             })
             .catch((error) => {
                 console.error("Failed to initialize the library", error)
