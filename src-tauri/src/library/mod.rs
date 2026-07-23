@@ -2550,6 +2550,69 @@ mod tests {
     }
 
     #[test]
+    fn pack_popularity_keeps_tag_filters_and_order() {
+        let (dir, conn) = test_conn();
+        for (uuid, pack_uuid, pack_name) in [
+            ("unrelated", "pack-0", "Unrelated"),
+            ("most-popular", "pack-1", "Most Popular"),
+            ("less-popular", "pack-2", "Less Popular"),
+        ] {
+            let mut asset = sample_asset(uuid, pack_uuid, pack_name);
+            if uuid == "unrelated" {
+                asset["tags"] = serde_json::json!([
+                    { "uuid": "t2", "label": "Unrelated", "__typename": "Tag" }
+                ]);
+            }
+            ingest::upsert(
+                &conn,
+                UpsertPayload {
+                    asset,
+                    relative_audio_path: format!("{pack_name}/kick.mp3"),
+                    waveform_relative_path: None,
+                    audio_cached_at: 1,
+                    favorite: None,
+                },
+            )
+            .unwrap();
+        }
+        conn.execute(
+            "UPDATE packs SET popularity_rank = CASE uuid
+                WHEN 'pack-0' THEN 1
+                WHEN 'pack-1' THEN 2
+                WHEN 'pack-2' THEN 3
+             END",
+            [],
+        )
+        .unwrap();
+
+        let result = search::search(
+            &conn,
+            LibrarySearchParams {
+                query: None,
+                tags: vec!["t1".into()],
+                cursor: None,
+                limit: 50,
+                sort: "pack_popularity".into(),
+                order: "DESC".into(),
+                favorites_only: false,
+                asset_category_slug: None,
+                key: None,
+                chord_type: None,
+                min_bpm: None,
+                max_bpm: None,
+                bpm: None,
+                pack_uuid: None,
+                samples_dir: dir.path().to_str().unwrap().into(),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(result.items.len(), 2);
+        assert_eq!(result.items[0]["uuid"], "most-popular");
+        assert_eq!(result.items[1]["uuid"], "less-popular");
+    }
+
+    #[test]
     fn migration_populates_existing_pack_counts() {
         let (_dir, conn) = test_conn();
         ingest::upsert(

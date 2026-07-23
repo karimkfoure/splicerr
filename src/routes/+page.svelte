@@ -185,6 +185,10 @@
             queryStore.order = "DESC"
         }
         queryStore.sort = newSort as AssetSortType
+        reloadFilteredAssets()
+    }
+
+    const reloadFilteredAssets = () => {
         resetAssetList()
         fetchAssets()
     }
@@ -329,7 +333,7 @@
             <SettingsDialog />
             <SearchInput
                 bind:value={queryStore.query}
-                onsubmit={fetchAssets}
+                onsubmit={reloadFilteredAssets}
                 mode={browseStore.mode}
                 class="flex-grow"
                 bind:inputRef={searchInputRef}
@@ -339,31 +343,22 @@
                 bind:pack_uuid={queryStore.pack_uuid}
                 bind:pack_label={queryStore.pack_label}
                 bind:pack_folder_name={queryStore.pack_folder_name}
-                onselect={() => {
-                    resetAssetList()
-                    fetchAssets()
-                }}
+                onselect={reloadFilteredAssets}
             />
             <KeySelect
                 bind:key={queryStore.key}
                 bind:chord_type={queryStore.chord_type}
-                onselect={() => {
-                    resetAssetList()
-                    fetchAssets()
-                }}
+                onselect={reloadFilteredAssets}
             />
             <BpmSelect
                 bind:bpm={queryStore.bpm}
                 bind:min_bpm={queryStore.min_bpm}
                 bind:max_bpm={queryStore.max_bpm}
-                onsubmit={() => {
-                    resetAssetList()
-                    fetchAssets()
-                }}
+                onsubmit={reloadFilteredAssets}
             />
             <AssetCategorySelect
                 bind:asset_category_slug={queryStore.asset_category_slug}
-                onselect={fetchAssets}
+                onselect={reloadFilteredAssets}
             />
         </div>
 
@@ -408,7 +403,7 @@
                                         dataStore.tags.push(tag.tag.uuid)
                                     }
                                     // updateTagSummary()
-                                    fetchAssets()
+                                    reloadFilteredAssets()
                                 }}
                             />
                         {/each}
