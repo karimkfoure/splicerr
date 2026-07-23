@@ -4,6 +4,11 @@ version = "1.0.0"
 description = "Yet another Splice frontend, inspired by ascpixi"
 authors = ["kosro"]
 edition = "2021"
+autobins = false
+
+[[bin]]
+name = "splicerrerr"
+path = "src/main.rs"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
